@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+deployment.local/
+*.pem
+*.key
+.env
+.env.*
+*credentials*.json
+*service-account*.json
+*-state.json
+*.log

@@ -1,0 +1,52 @@
+[Unit]
+Description=also-ran GCP capacity reconciler (demand, scale-up and maintenance tasks)
+After=network-online.target{{ ' also-ran-github-token.service' if also_ran_github_app_enabled | bool else '' }}
+Wants=network-online.target
+OnFailure=also-ran-failure@%n.service
+# Stop retrying for a while after repeated crashes; OnFailure then reports it.
+StartLimitIntervalSec=30min
+StartLimitBurst=5
+
+[Service]
+Environment=ALSO_RAN_GITHUB_BUDGET=/var/lib/also-ran/github-budget.json
+Type=notify
+NotifyAccess=main
+WatchdogSec=120
+Restart=always
+RestartSec=15
+# SIGTERM reaches only the reconciler, which stops starting ticks and lets
+# in-flight creates and deletes finish; the old TimeoutStartSec bounds them.
+KillMode=mixed
+TimeoutStopSec=15min
+User=also-ran
+Group=also-ran
+ExecStart=/usr/bin/python3 /opt/also-ran/gcp_reconciler.py --policy /etc/also-ran/gcp-policy.json --market-state /var/lib/also-ran/gcp-market-state.json --github-token-file {{ also_ran_github_app_enabled | bool | ternary(also_ran_github_token_path, '%d/github-token') }} --lifecycle-script /opt/also-ran/gcp-runner-lifecycle.py --heavy-mode {{ also_ran_gcp_broker_apply | bool | ternary('apply', 'dry-run') }} --general-mode {{ also_ran_gcp_general_broker_apply | bool | ternary('apply', 'dry-run') }}
+{% if also_ran_github_app_enabled | bool %}
+# The reconciler never restarts on its own, and LoadCredential copies the file
+# once at start, so an App token (one hour) would go stale. It reads the token
+# file the timer replaces in place, once per pass, instead.
+{% else %}
+LoadCredential=github-token:{{ also_ran_github_token_path }}
+{% endif %}
+{% include 'gcp-auth.inc.j2' %}
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+RuntimeDirectory=also-ran
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/also-ran
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

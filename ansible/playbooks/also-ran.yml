@@ -1,0 +1,8 @@
+---
+- name: Install also-ran observer
+  hosts: also_ran_controllers
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: also_ran

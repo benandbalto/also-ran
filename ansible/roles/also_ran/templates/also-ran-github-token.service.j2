@@ -1,0 +1,31 @@
+[Unit]
+Description=Mint the also-ran GitHub App installation token
+After=network-online.target
+Wants=network-online.target
+OnFailure=also-ran-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/also-ran/github_app_token.py --app-id {{ also_ran_github_app_id }} --installation-id {{ also_ran_github_app_installation_id }} --private-key-file %d/github-app-key --output /var/lib/also-ran-github/github-token
+LoadCredential=github-app-key:/etc/also-ran/github-app-key.pem
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/also-ran-github
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+UMask=0027

@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+oom_kill_total="$(awk '$1 == "oom_kill" { print $2 }' /proc/vmstat)"
+memory_available_bytes="$(awk '/^MemAvailable:/ { print $2 * 1024 }' /proc/meminfo)"
+memory_pressure_some_avg10="$(awk '/^some / { for (i = 1; i <= NF; i++) if ($i ~ /^avg10=/) { sub("avg10=", "", $i); print $i } }' /proc/pressure/memory)"
+read -r load1 load5 load15 _ </proc/loadavg
+disk_available_bytes="$(df -P -B1 / | awk 'NR == 2 { print $4 }')"
+local_ssd_available_bytes=0
+local_ssd_docker_store=""
+if mountpoint --quiet /mnt/disks/titanium; then
+  local_ssd_available_bytes="$(df -P -B1 /mnt/disks/titanium | awk 'NR == 2 { print $4 }')"
+  # Which way gcp-runner-local-ssd populated Docker's store: lazy-lowers or full-copy.
+  local_ssd_docker_store="$(sed -n 's/^docker_store=//p' /mnt/disks/titanium/.also-ran-ci-local-ssd 2>/dev/null || true)"
+fi
+uptime_seconds="$(awk '{ print int($1) }' /proc/uptime)"
+cpu_iowait_ticks="$(awk '$1 == "cpu" { print $6 }' /proc/stat)"
+containers_running="$(docker ps -q --filter label=outrunner=true | wc -l | tr -d ' ')"
+containers_all="$(docker ps -aq --filter label=outrunner=true | wc -l | tr -d ' ')"
+runner_processes="$(ps -eo comm= | awk '$1 == "Runner.Listener" || $1 == "Runner.Worker" { count++ } END { print count + 0 }')"
+# A Runner.Worker exists only while a job runs. A pre-registered spare (#457)
+# has a container and a Runner.Listener but no worker, so this is the busy count.
+runner_workers="$(ps -eo comm= | awk '$1 == "Runner.Worker" { count++ } END { print count + 0 }')"
+
+# Replay the stable boot event. This closes the race between collector service
+# start and its first journal cursor. Consumers deduplicate by event_id.
+if [[ -f /var/lib/gcp-runner-bootstrap/bootstrap-metric.json ]]; then
+  cat /var/lib/gcp-runner-bootstrap/bootstrap-metric.json \
+    | systemd-cat --identifier=also-ran-runner-lifecycle --priority=info
+fi
+if [[ -f /var/lib/gcp-runner-bootstrap/readiness-metric.json ]]; then
+  jq -c --arg boot_id "$(cat /proc/sys/kernel/random/boot_id)" \
+    'select(.boot_id == $boot_id)' /var/lib/gcp-runner-bootstrap/readiness-metric.json \
+    | systemd-cat --identifier=also-ran-runner-lifecycle --priority=info
+fi
+identity='{}'
+if [[ -f /var/lib/gcp-runner-bootstrap/identity.json ]]; then
+  identity="$(cat /var/lib/gcp-runner-bootstrap/identity.json)"
+fi
+jq --compact-output --null-input \
+  --argjson identity "${identity}" \
+  --arg observed_at "$(date --utc +%FT%TZ)" \
+  --arg event runner_host_sample \
+  --arg fleet "{{ telemetry_fleet_name }}" \
+  --arg scale_set "{{ outrunner_scale_set_name }}" \
+  --arg runner_pool "{{ telemetry_runner_pool }}" \
+  --argjson oom_kill_total "${oom_kill_total:-0}" \
+  --argjson memory_available_bytes "${memory_available_bytes:-0}" \
+  --argjson memory_pressure_some_avg10 "${memory_pressure_some_avg10:-0}" \
+  --argjson load1 "${load1:-0}" \
+  --argjson load5 "${load5:-0}" \
+  --argjson load15 "${load15:-0}" \
+  --argjson disk_available_bytes "${disk_available_bytes:-0}" \
+  --argjson local_ssd_available_bytes "${local_ssd_available_bytes:-0}" \
+  --arg local_ssd_docker_store "${local_ssd_docker_store}" \
+  --argjson uptime_seconds "${uptime_seconds:-0}" \
+  --argjson cpu_iowait_ticks "${cpu_iowait_ticks:-0}" \
+  --argjson containers_running "${containers_running:-0}" \
+  --argjson containers_all "${containers_all:-0}" \
+  --argjson runner_processes "${runner_processes:-0}" \
+  --argjson runner_workers "${runner_workers:-0}" \
+  '{
+    event: $event,
+    observed_at: $observed_at,
+    host_instance_id: $identity.instance_id,
+    boot_id: $identity.boot_id,
+    zone: $identity.zone,
+    image_source_commit: $identity.image_source_commit,
+    fleet: $fleet,
+    runner_scale_set: $scale_set,
+    runner_pool: $runner_pool,
+    oom_kill_total: $oom_kill_total,
+    memory_available_bytes: $memory_available_bytes,
+    memory_pressure_some_avg10: $memory_pressure_some_avg10,
+    load1: $load1,
+    load5: $load5,
+    load15: $load15,
+    disk_available_bytes: $disk_available_bytes,
+    local_ssd_available_bytes: $local_ssd_available_bytes,
+    local_ssd_docker_store: $local_ssd_docker_store,
+    uptime_seconds: $uptime_seconds,
+    cpu_iowait_ticks: $cpu_iowait_ticks,
+    outrunner_containers_running: $containers_running,
+    outrunner_containers_all: $containers_all,
+    runner_processes: $runner_processes,
+    runner_workers: $runner_workers
+  }' \
+  | systemd-cat --identifier=also-ran-runner-telemetry --priority=info

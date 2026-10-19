@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for a GCP runner drain request every 15 seconds
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=15s
+AccuracySec=1s
+Persistent=true
+Unit=gcp-runner-reaper.service
+
+[Install]
+WantedBy=timers.target

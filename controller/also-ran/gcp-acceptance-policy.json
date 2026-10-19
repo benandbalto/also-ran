@@ -1,0 +1,493 @@
+{
+  "policy_version": 1,
+  "project_id": "also-ran-ci-runners",
+  "project_number": "123456789012",
+  "github_repositories": [
+    "example-org/example-repo",
+    "example-org/another-repo"
+  ],
+  "github_runner_scope": "organization",
+  "image_source_commit": "0deaaf564f76246a7801c8c21802fe15b625632f",
+  "base_image": "projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20260906",
+  "golden_image": "also-ran-runner-ubuntu2404-0deaaf564f76",
+  "machine_type": "n2-standard-8",
+  "candidate_zones": [
+    "us-central1-a",
+    "us-central1-b",
+    "us-east1-b",
+    "us-east1-c",
+    "us-east4-a",
+    "us-east4-b",
+    "us-west1-a",
+    "us-west1-b"
+  ],
+  "network": {
+    "name": "also-ran-ci-runners",
+    "subnet": "runner-hosts-us-central1",
+    "subnet_region": "us-central1",
+    "subnet_cidr": "10.42.0.0/24",
+    "ssh_firewall": "also-ran-ci-runners-ssh-admin",
+    "iap_ssh_firewall": "also-ran-ci-runners-ssh-iap",
+    "router": "also-ran-ci-runners-us-central1",
+    "nat": "also-ran-ci-runners-us-central1",
+    "ssh_source_cidrs": [
+      "192.0.2.10/32",
+      "192.0.2.11/32"
+    ],
+    "egress": {
+      "mode": "nat",
+      "network_tier": "PREMIUM",
+      "public_ingress_allowlist": [
+        "192.0.2.10/32",
+        "192.0.2.11/32",
+        "35.235.240.0/20"
+      ]
+    }
+  },
+  "identities": {
+    "observer": "also-ran-observer@also-ran-ci-runners.iam.gserviceaccount.com",
+    "controller": "also-ran-controller@also-ran-ci-runners.iam.gserviceaccount.com",
+    "builder": "also-ran-runner-builder@also-ran-ci-runners.iam.gserviceaccount.com",
+    "runtime": "also-ran-runner-runtime@also-ran-ci-runners.iam.gserviceaccount.com"
+  },
+  "secrets": [
+    "outrunner-github-token",
+    "axiom-api-token"
+  ],
+  "builder": {
+    "name": "also-ran-runner-image-builder-gcp",
+    "zone": "us-central1-c",
+    "machine_type": "e2-standard-4",
+    "boot_disk_gb": 32,
+    "labels": {
+      "managed-by": "also-ran-image-builder",
+      "fleet": "also-ran-ci",
+      "lifecycle": "image-build",
+      "provider": "gcp"
+    }
+  },
+  "acceptance": {
+    "name": "also-ran-runner-acceptance-gcp-drain-01",
+    "zone": "us-central1-a",
+    "machine_type": "c4-standard-8-lssd",
+    "boot_disk_gb": 32,
+    "boot_disk_type": "hyperdisk-balanced",
+    "boot_disk_provisioned_iops": 3000,
+    "boot_disk_provisioned_throughput": 140,
+    "use_local_ssd": true,
+    "provisioning_model": "SPOT",
+    "maximum_hosts": 1,
+    "outrunner_max_runners": 1,
+    "automatic_delete": false,
+    "scale_set": "also-ran-gcp-drain-01",
+    "diagnostic_label": "also-ran-gcp-drain-01",
+    "include_shared_label": false,
+    "labels": {
+      "managed-by": "runner-autoscaler",
+      "fleet": "also-ran-ci",
+      "lifecycle": "acceptance",
+      "autoscale-slot": "gcp-drain-01",
+      "provider": "gcp",
+      "hold": "true"
+    }
+  },
+  "campaign": {
+    "name_prefix": "also-ran-runner-campaign-gcp",
+    "zone_cycle": [
+      "us-central1-a",
+      "us-central1-b",
+      "us-central1-c",
+      "us-central1-f"
+    ],
+    "maximum_hosts": 20,
+    "boot_disk_gb": 100,
+    "scale_set_prefix": "also-ran-gcp-burst20",
+    "diagnostic_label_prefix": "also-ran-gcp-burst20",
+    "include_shared_label": false,
+    "labels": {
+      "managed-by": "runner-autoscaler",
+      "fleet": "also-ran-ci",
+      "lifecycle": "campaign",
+      "provider": "gcp",
+      "hold": "true"
+    }
+  },
+  "production": {
+    "name_prefix": "also-ran-runner-gcp-prod",
+    "zone_cycle": [
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "us-south1-a",
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "us-south1-b",
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "us-south1-a",
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "us-south1-b",
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "us-south1-a",
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "us-south1-b",
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "us-south1-a",
+      "us-south1-b"
+    ],
+    "maximum_hosts": 28,
+    "minimum_hosts": 0,
+    "retention_mode": "peak_warm_pool",
+    "warm_pool": {
+      "timezone": "America/Los_Angeles",
+      "days": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri",
+        "sat",
+        "sun"
+      ],
+      "start": "08:00",
+      "end": "23:00",
+      "minimum_hosts": 8,
+      "idle_minutes": 60
+    },
+    "max_jobs_per_host": 5,
+    "quarantine_grace_minutes": 45,
+    "scale_down_hold_minutes": 5,
+    "vcpus_per_host": 8,
+    "autoscale_slot_prefix": "gcp-prod",
+    "boot_disk_gb": 32,
+    "boot_disk_type": "hyperdisk-balanced",
+    "boot_disk_provisioned_iops": 3000,
+    "boot_disk_provisioned_throughput": 140,
+    "machine_type": "c4-standard-8-lssd",
+    "use_local_ssd": true,
+    "legacy_image_source_commits": [],
+    "scale_set_prefix": "also-ran-gcp-prod",
+    "workflow_label": "outrunner-gcp-linux-x64",
+    "include_shared_label": false,
+    "regional_placement_enabled": true,
+    "price_ordered_regions": [
+      "northamerica-northeast1",
+      "europe-west9",
+      "us-west2",
+      "us-south1"
+    ],
+    "create_enabled": true,
+    "automatic_delete": false,
+    "labels": {
+      "managed-by": "runner-autoscaler",
+      "fleet": "also-ran-ci",
+      "lifecycle": "burst",
+      "provider": "gcp",
+      "hold": "true"
+    }
+  },
+  "general_production": {
+    "name_prefix": "also-ran-runner-gcp-general",
+    "zone_cycle": [
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "us-south1-a",
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "us-south1-b",
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "us-south1-a",
+      "northamerica-northeast1-b",
+      "europe-west9-a",
+      "us-south1-b"
+    ],
+    "maximum_hosts": 12,
+    "minimum_hosts": 0,
+    "retention_mode": "peak_warm_pool",
+    "warm_pool": {
+      "timezone": "America/Los_Angeles",
+      "days": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri",
+        "sat",
+        "sun"
+      ],
+      "start": "08:00",
+      "end": "23:00",
+      "minimum_hosts": 4,
+      "idle_minutes": 60
+    },
+    "max_jobs_per_host": 10,
+    "quarantine_grace_minutes": 45,
+    "scale_down_hold_minutes": 5,
+    "vcpus_per_host": 4,
+    "autoscale_slot_prefix": "gcp-general",
+    "boot_disk_gb": 32,
+    "boot_disk_type": "hyperdisk-balanced",
+    "boot_disk_provisioned_iops": 3000,
+    "boot_disk_provisioned_throughput": 140,
+    "machine_type": "c4-standard-4-lssd",
+    "use_local_ssd": true,
+    "legacy_image_source_commits": [],
+    "scale_set_prefix": "also-ran-gcp-general",
+    "workflow_label": "outrunner-gcp-general-linux-x64",
+    "include_shared_label": false,
+    "regional_placement_enabled": true,
+    "price_ordered_regions": [
+      "northamerica-northeast1",
+      "europe-west9",
+      "us-west2",
+      "us-south1"
+    ],
+    "create_enabled": true,
+    "automatic_delete": false,
+    "labels": {
+      "managed-by": "runner-autoscaler",
+      "fleet": "also-ran-ci",
+      "lifecycle": "general",
+      "provider": "gcp",
+      "hold": "true"
+    }
+  },
+  "regional_canaries": {
+    "maximum_concurrent_hosts": 3,
+    "machine_type": "c4-standard-8-lssd",
+    "boot_disk_gb": 32,
+    "boot_disk_type": "hyperdisk-balanced",
+    "boot_disk_provisioned_iops": 3000,
+    "boot_disk_provisioned_throughput": 140,
+    "use_local_ssd": true,
+    "include_shared_label": false,
+    "labels": {
+      "managed-by": "runner-autoscaler",
+      "fleet": "also-ran-ci",
+      "lifecycle": "regional-canary",
+      "provider": "gcp",
+      "hold": "true"
+    },
+    "regions": {
+      "europe-west9": {
+        "short_name": "paris",
+        "zones": [
+          "europe-west9-a"
+        ],
+        "drain_slots": {
+          "europe-west9-a": "02"
+        },
+        "subnet": "runner-hosts-europe-west9"
+      },
+      "us-south1": {
+        "short_name": "dallas",
+        "zones": [
+          "us-south1-a",
+          "us-south1-b"
+        ],
+        "drain_slots": {
+          "us-south1-a": "03",
+          "us-south1-b": "04"
+        },
+        "subnet": "runner-hosts-us-south1"
+      },
+      "northamerica-northeast1": {
+        "short_name": "montreal",
+        "zones": [
+          "northamerica-northeast1-b"
+        ],
+        "drain_slots": {
+          "northamerica-northeast1-b": "05"
+        },
+        "subnet": "runner-hosts-northamerica-northeast1"
+      },
+      "us-west2": {
+        "short_name": "losangeles",
+        "zones": [
+          "us-west2-c"
+        ],
+        "drain_slots": {
+          "us-west2-c": "06"
+        },
+        "subnet": "runner-hosts-us-west2"
+      },
+      "asia-southeast2": {
+        "short_name": "jakarta",
+        "zones": [
+          "asia-southeast2-a"
+        ],
+        "drain_slots": {
+          "asia-southeast2-a": "09"
+        },
+        "subnet": "runner-hosts-asia-southeast2"
+      }
+    }
+  },
+  "market": {
+    "policy_version": 1,
+    "observer_enabled": true,
+    "mutation_enabled": false,
+    "heavy_global_maximum_hosts": 28,
+    "heavy_secondary_region_maximum_hosts": 10,
+    "general_global_maximum_hosts": 12,
+    "general_secondary_region_maximum_hosts": 4,
+    "vcpus_per_heavy_host": 8,
+    "global_vcpu_headroom_ratio": 1.25,
+    "global_vcpu_reserve": 12,
+    "maximum_heavy_hourly_usd": 8.5,
+    "maximum_combined_hourly_usd": 10.0,
+    "maximum_price_age_hours": 72,
+    "shared_regional_capacity": {
+      "regions": [
+        "northamerica-northeast1",
+        "europe-west9"
+      ],
+      "reserved_vcpus": 8,
+      "maximum_heavy_hosts": 12,
+      "maximum_general_hosts": 12
+    },
+    "regions": [
+      {
+        "name": "us-central1",
+        "zones": [
+          "us-central1-a",
+          "us-central1-b",
+          "us-central1-c",
+          "us-central1-f"
+        ],
+        "regional_maximum_hosts": 20,
+        "maximum_hourly_usd": 0.5,
+        "canary_valid": true,
+        "foundation": {
+          "network": "also-ran-ci-runners",
+          "subnet": "runner-hosts-us-central1",
+          "subnet_cidr": "10.42.0.0/24",
+          "router": "also-ran-ci-runners-us-central1",
+          "nat": "also-ran-ci-runners-us-central1"
+        }
+      },
+      {
+        "name": "northamerica-northeast1",
+        "zones": [
+          "northamerica-northeast1-b"
+        ],
+        "regional_maximum_hosts": 10,
+        "maximum_hourly_usd": 0.5,
+        "canary_valid": true,
+        "foundation": {
+          "network": "also-ran-ci-runners",
+          "subnet": "runner-hosts-northamerica-northeast1",
+          "subnet_cidr": "10.42.1.0/24",
+          "router": "also-ran-ci-runners-northamerica-northeast1",
+          "nat": "also-ran-ci-runners-northamerica-northeast1"
+        }
+      },
+      {
+        "name": "europe-west9",
+        "zones": [
+          "europe-west9-a"
+        ],
+        "regional_maximum_hosts": 10,
+        "maximum_hourly_usd": 0.5,
+        "canary_valid": true,
+        "foundation": {
+          "network": "also-ran-ci-runners",
+          "subnet": "runner-hosts-europe-west9",
+          "subnet_cidr": "10.42.2.0/24",
+          "router": "also-ran-ci-runners-europe-west9",
+          "nat": "also-ran-ci-runners-europe-west9"
+        }
+      },
+      {
+        "name": "asia-southeast2",
+        "zones": [
+          "asia-southeast2-a",
+          "asia-southeast2-b"
+        ],
+        "regional_maximum_hosts": 8,
+        "maximum_hourly_usd": 0.5,
+        "canary_valid": false,
+        "foundation": {
+          "network": "also-ran-ci-runners",
+          "subnet": "runner-hosts-asia-southeast2",
+          "subnet_cidr": "10.42.3.0/24",
+          "router": "also-ran-ci-runners-asia-southeast2",
+          "nat": "also-ran-ci-runners-asia-southeast2"
+        }
+      },
+      {
+        "name": "us-west2",
+        "zones": [
+          "us-west2-c"
+        ],
+        "regional_maximum_hosts": 6,
+        "maximum_hourly_usd": 0.5,
+        "canary_valid": true,
+        "foundation": {
+          "network": "also-ran-ci-runners",
+          "subnet": "runner-hosts-us-west2",
+          "subnet_cidr": "10.42.4.0/24",
+          "router": "also-ran-ci-runners-us-west2",
+          "nat": "also-ran-ci-runners-us-west2"
+        }
+      },
+      {
+        "name": "us-south1",
+        "zones": [
+          "us-south1-a",
+          "us-south1-b"
+        ],
+        "regional_maximum_hosts": 8,
+        "maximum_hourly_usd": 0.5,
+        "canary_valid": true,
+        "foundation": {
+          "network": "also-ran-ci-runners",
+          "subnet": "runner-hosts-us-south1",
+          "subnet_cidr": "10.42.5.0/24",
+          "router": "also-ran-ci-runners-us-south1",
+          "nat": "also-ran-ci-runners-us-south1"
+        }
+      },
+      {
+        "name": "europe-west8",
+        "zones": [
+          "europe-west8-b",
+          "europe-west8-c"
+        ],
+        "regional_maximum_hosts": 3,
+        "maximum_hourly_usd": 0.5,
+        "canary_valid": false,
+        "foundation": {
+          "network": "also-ran-ci-runners",
+          "subnet": "runner-hosts-europe-west8",
+          "subnet_cidr": "10.42.6.0/24",
+          "router": "also-ran-ci-runners-europe-west8",
+          "nat": "also-ran-ci-runners-europe-west8"
+        }
+      }
+    ]
+  },
+  "target": {
+    "lifecycle": "broker-created-disposable-spot",
+    "provisioning_model": "SPOT",
+    "desired_burst_hosts": 20,
+    "vcpus_per_host": 8,
+    "requested_regional_vcpus": 160,
+    "automatic_delete_after_drain": true
+  },
+  "spend": {
+    "maximum_acceptance_runtime_minutes": 60,
+    "maximum_campaign_runtime_minutes": 60,
+    "maximum_aggregate_hourly_usd": 5.0
+  }
+}

@@ -1,0 +1,178 @@
+FROM docker@sha256:9a06753d2401cd049b34cd27dbbc3e0db717d4c1db7bc7f2efad1c187e00bf5a AS docker_engine
+
+FROM ghcr.io/actions/actions-runner@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+
+USER root
+
+ARG NODE_VERSION=24.20.0
+ARG NODE_SHA256=2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2
+ARG PNPM_VERSION=10.33.0
+ARG PNPM_SHA256=8d4e8f7d778e8ac482022e2577011706a872542f6f6f233e795a4d9f978ea8b5
+ARG GH_VERSION=2.102.0
+ARG GH_SHA256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
+# The pinned .deb is the noble build in packages.microsoft.com/repos/azure-cli.
+# Its SHA256 comes from that repository's Packages index, whose InRelease is
+# signed by the Microsoft release key BC528686B50D79E339D3721CEB3E94ADBE1229CF.
+ARG AZURE_CLI_VERSION=2.90.0
+ARG AZURE_CLI_SHA256=ac305806dda839e0857c35f26c05ac7eeecbfdf3ca1c2cc562e1d5124cd044ab
+ARG BICEP_VERSION=0.47.16
+ARG BICEP_SHA256=64c345a58e0c3e48b1bc98a4e62d6b3adb1d238281297de3400aeafb2697aa5a
+ARG FUNCTIONS_CORE_TOOLS_VERSION=4.6.0
+ARG FUNCTIONS_CORE_TOOLS_BUILD=4.0.251498
+ARG FUNCTIONS_CORE_TOOLS_SHA256=01a088c88dc21af27209861e98f9cb3dec949f153a2ad9bf9fcdc3e574249042
+ARG AZURITE_VERSION=3.37.0
+# Bundle selected by also-ran's [4.*, 5.0.0) range during runtime validation.
+ARG FUNCTIONS_BUNDLE_VERSION=4.39.1
+ARG FUNCTIONS_BUNDLE_SHA256=16c49429f6891518a6aeef43ff8c03f307d06685f40512a863da61d17494360a
+# Match also-ranApp's resolved lockfile version, not its semver range.
+ARG PLAYWRIGHT_VERSION=1.63.0
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        iptables \
+        iproute2 \
+        libatomic1 \
+        lsof \
+        make \
+        postgresql-client \
+        unzip \
+        xz-utils \
+        zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+# setup-node discovers preinstalled runtimes through RUNNER_TOOL_CACHE. The
+# adjacent x64.complete marker is the convention used by @actions/tool-cache.
+RUN node_archive="node-v${NODE_VERSION}-linux-x64.tar.xz" \
+    && curl --fail --location --silent --show-error \
+        "https://nodejs.org/dist/v${NODE_VERSION}/${node_archive}" \
+        --output "/tmp/${node_archive}" \
+    && echo "${NODE_SHA256}  /tmp/${node_archive}" | sha256sum --check --strict \
+    && mkdir -p "/opt/hostedtoolcache/node/${NODE_VERSION}/x64" \
+    && tar --extract --xz --file "/tmp/${node_archive}" \
+        --directory "/opt/hostedtoolcache/node/${NODE_VERSION}/x64" \
+        --strip-components=1 \
+    && touch "/opt/hostedtoolcache/node/${NODE_VERSION}/x64.complete" \
+    && rm "/tmp/${node_archive}" \
+    && ln -s "/opt/hostedtoolcache/node/${NODE_VERSION}/x64/bin/node" /usr/local/bin/node \
+    && ln -s "/opt/hostedtoolcache/node/${NODE_VERSION}/x64/bin/npm" /usr/local/bin/npm \
+    && ln -s "/opt/hostedtoolcache/node/${NODE_VERSION}/x64/bin/npx" /usr/local/bin/npx \
+    && chown -R runner:runner /opt/hostedtoolcache
+
+RUN curl --fail --location --silent --show-error \
+        "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64" \
+        --output /usr/local/bin/pnpm \
+    && echo "${PNPM_SHA256}  /usr/local/bin/pnpm" | sha256sum --check --strict \
+    && chmod 0755 /usr/local/bin/pnpm
+
+RUN gh_archive="gh_${GH_VERSION}_linux_amd64.tar.gz" \
+    && curl --fail --location --silent --show-error \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${gh_archive}" \
+        --output "/tmp/${gh_archive}" \
+    && echo "${GH_SHA256}  /tmp/${gh_archive}" | sha256sum --check --strict \
+    && tar --extract --gzip --file "/tmp/${gh_archive}" \
+        --directory /usr/local --strip-components=1 \
+        "gh_${GH_VERSION}_linux_amd64/bin/gh" \
+    && rm "/tmp/${gh_archive}"
+
+# Installed from the pinned file rather than the apt source, so no later
+# apt-get upgrade inside a job can move the version.
+RUN azure_cli_deb="azure-cli_${AZURE_CLI_VERSION}-1~noble_amd64.deb" \
+    && curl --fail --location --silent --show-error \
+        "https://packages.microsoft.com/repos/azure-cli/pool/main/a/azure-cli/${azure_cli_deb}" \
+        --output "/tmp/${azure_cli_deb}" \
+    && echo "${AZURE_CLI_SHA256}  /tmp/${azure_cli_deb}" | sha256sum --check --strict \
+    && apt-get update \
+    && apt-get install --yes --no-install-recommends "/tmp/${azure_cli_deb}" \
+    && rm -rf "/tmp/${azure_cli_deb}" /var/lib/apt/lists/*
+
+# Standalone Bicep. `az bicep` uses this binary through
+# AZURE_BICEP_USE_BINARY_FROM_PATH instead of downloading its own at job time.
+RUN curl --fail --location --silent --show-error \
+        "https://github.com/Azure/bicep/releases/download/v${BICEP_VERSION}/bicep-linux-x64" \
+        --output /usr/local/bin/bicep \
+    && echo "${BICEP_SHA256}  /usr/local/bin/bicep" | sha256sum --check --strict \
+    && chmod 0755 /usr/local/bin/bicep
+
+# Stable tools and browser OS libraries belong in the isolated job image. No
+# application source, compiled bundle, credentials or mutable pnpm store here.
+# Lock all npm dependencies and verify the native Functions archive before use.
+# Disable package install scripts; Core Tools' downloader is replaced below.
+COPY e2e-tools/package.json e2e-tools/package-lock.json /opt/also-ran-e2e/
+RUN npm ci --prefix /opt/also-ran-e2e --ignore-scripts --no-audit --no-fund \
+    && curl --fail --location --silent --show-error \
+        "https://cdn.functions.azure.com/public/${FUNCTIONS_CORE_TOOLS_BUILD}/Azure.Functions.Cli.linux-x64.${FUNCTIONS_CORE_TOOLS_VERSION}.zip" \
+        --output /tmp/functions-core-tools.zip \
+    && echo "${FUNCTIONS_CORE_TOOLS_SHA256}  /tmp/functions-core-tools.zip" | sha256sum --check --strict \
+    && mkdir -p /opt/also-ran-e2e/node_modules/azure-functions-core-tools/bin \
+    && unzip -q /tmp/functions-core-tools.zip -d /opt/also-ran-e2e/node_modules/azure-functions-core-tools/bin \
+    && chmod 0755 "/opt/also-ran-e2e/node_modules/azure-functions-core-tools/bin/func" \
+        "/opt/also-ran-e2e/node_modules/azure-functions-core-tools/bin/gozip" \
+        "/opt/also-ran-e2e/node_modules/azure-functions-core-tools/bin/in-proc6/func" \
+        "/opt/also-ran-e2e/node_modules/azure-functions-core-tools/bin/in-proc8/func" \
+    && rm /tmp/functions-core-tools.zip \
+    && ln -s /opt/also-ran-e2e/node_modules/.bin/func /usr/local/bin/func \
+    && ln -s /opt/also-ran-e2e/node_modules/.bin/azurite /usr/local/bin/azurite \
+    && test "$(func --version)" = "${FUNCTIONS_CORE_TOOLS_VERSION}" \
+    && test "$(azurite --version)" = "${AZURITE_VERSION}" \
+    && test "$(node -p 'require("/opt/also-ran-e2e/node_modules/playwright/package.json").version')" = "${PLAYWRIGHT_VERSION}" \
+    && PLAYWRIGHT_BROWSERS_PATH=/opt/also-ran-e2e/browsers \
+        /opt/also-ran-e2e/node_modules/.bin/playwright install --with-deps chromium \
+    && printf '{"playwright":"%s","functions":"%s","browserPath":"/opt/also-ran-e2e/browsers"}\n' \
+        "${PLAYWRIGHT_VERSION}" "${FUNCTIONS_CORE_TOOLS_VERSION}" > /opt/also-ran-e2e/manifest.json \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
+
+# Seed the host's standard bundle search path without changing host.json's
+# version range. A future incompatible version falls back to the normal download.
+RUN bundle_id=Microsoft.Azure.Functions.ExtensionBundle \
+    && bundle_zip="${bundle_id}.${FUNCTIONS_BUNDLE_VERSION}_any-any.zip" \
+    && curl --fail --location --silent --show-error \
+        "https://cdn.functions.azure.com/public/ExtensionBundles/${bundle_id}/${FUNCTIONS_BUNDLE_VERSION}/${bundle_zip}" \
+        --output /tmp/functions-bundle.zip \
+    && echo "${FUNCTIONS_BUNDLE_SHA256}  /tmp/functions-bundle.zip" | sha256sum --check --strict \
+    && mkdir -p "/FuncExtensionBundles/${bundle_id}/${FUNCTIONS_BUNDLE_VERSION}" \
+    && unzip -q /tmp/functions-bundle.zip -d "/FuncExtensionBundles/${bundle_id}/${FUNCTIONS_BUNDLE_VERSION}" \
+    && test -s "/FuncExtensionBundles/${bundle_id}/${FUNCTIONS_BUNDLE_VERSION}/bin/extensions.json" \
+    && mkdir -p /home/runner/.azure-functions-core-tools/Functions /home/runner/data/Functions \
+    && ln -s /FuncExtensionBundles /home/runner/.azure-functions-core-tools/Functions/ExtensionBundles \
+    && ln -s /FuncExtensionBundles /home/runner/data/Functions/ExtensionBundles \
+    && chown -R runner:runner /FuncExtensionBundles /home/runner/.azure-functions-core-tools /home/runner/data \
+    && rm /tmp/functions-bundle.zip
+
+# Static Docker Engine binaries; each runner gets its own daemon and storage.
+COPY --from=docker_engine /usr/local/bin/docker /usr/local/bin/dockerd /usr/local/bin/docker-init /usr/local/bin/docker-proxy /usr/local/bin/containerd /usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/ctr /usr/local/bin/runc /usr/local/bin/
+COPY --from=docker_engine /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
+COPY runner-with-docker /usr/local/bin/runner-with-docker
+RUN chmod 0755 /usr/local/bin/runner-with-docker
+
+ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache
+# Disable gh/az update checks and telemetry, plus Functions telemetry.
+# Functions still checks the online bundle index; its version range can advance.
+ENV FUNCTIONS_CORE_TOOLS_TELEMETRY_OPTOUT=1 \
+    GH_NO_UPDATE_NOTIFIER=1 \
+    GH_TELEMETRY=false \
+    GH_NO_EXTENSION_UPDATE_NOTIFIER=1 \
+    AZURE_CORE_COLLECT_TELEMETRY=false \
+    AZURE_BICEP_USE_BINARY_FROM_PATH=true \
+    AZURE_BICEP_CHECK_VERSION=false
+
+USER runner
+
+RUN docker --version \
+    && docker compose version \
+    && docker buildx version \
+    && node --version \
+    && pnpm --version \
+    && test "$(func --version)" = "${FUNCTIONS_CORE_TOOLS_VERSION}" \
+    && test "$(azurite --version)" = "${AZURITE_VERSION}" \
+    && PLAYWRIGHT_BROWSERS_PATH=/opt/also-ran-e2e/browsers node -e \
+        'const {chromium}=require("/opt/also-ran-e2e/node_modules/playwright"); (async()=>{for(const channel of [undefined,"chromium"]){const b=await chromium.launch({channel});await b.close();}})().catch(()=>process.exit(1));' \
+    && make --version \
+    && pg_isready --version \
+    && test -w "${RUNNER_TOOL_CACHE}" \
+    && lsof -v >/dev/null \
+    && zstd --version \
+    && gh --version \
+    && az version \
+    && bicep --version \
+    && az bicep version \
+    && rm -rf "${HOME}/.azure" "${HOME}/.net"

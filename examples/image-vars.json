@@ -1,0 +1,18 @@
+{
+  "runner_timezone": "Etc/UTC",
+  "runner_admin_user": "runner-admin",
+  "runner_admin_public_keys": [],
+  "outrunner_version": "1.2.1-arboreal.14",
+  "outrunner_deb_url": "https://github.com/ArborealMgmt/gha-outrunner/releases/download/v1.2.1-arboreal.14/outrunner_1.2.1-arboreal.14_linux_amd64.deb",
+  "outrunner_deb_sha256": "34247ca4cf248867d1897670f1812be505e32b28f4d2d662b172c37e2f78e646",
+  "outrunner_github_url": "https://github.com/example-org",
+  "outrunner_labels": [
+    "outrunner-gcp-linux-x64"
+  ],
+  "outrunner_max_runners": 1,
+  "outrunner_runner_image": "also-ran-actions-runner:2.337.0-node24.20.0-pnpm10.33.0-pgclient-make-dind-gh-az-bicep-func4.6.0-pw1.63.0-azurite3.37.0-bundle4.39.1-r13",
+  "outrunner_service_enabled": false,
+  "telemetry_host_role": "github-runner",
+  "telemetry_fleet_name": "also-ran-ci",
+  "telemetry_enabled": false
+}

@@ -1,0 +1,7 @@
+[Manager]
+# A runner host is disposable: by the time it stops, Outrunner has drained and
+# published its receipt (Outrunner keeps its own longer limit, see
+# outrunner-drain-receipt.conf). Measured on the stock Ubuntu GCE image
+# (shutdown regression), poweroff took ~2m10s because agents sat out the
+# 90s default before SIGKILL. That wait is billed on every host.
+DefaultTimeoutStopSec={{ gcp_runner_bootstrap_default_stop_timeout }}

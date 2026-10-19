@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly receipt_path="/var/lib/outrunner/drain-receipt.json"
+readonly admission_closed_path="/var/lib/outrunner/admission-closed.json"
+readonly serial_device="/dev/ttyS0"
+readonly serial_prefix="ALSO_RAN_DRAIN_RECEIPT_V1"
+readonly admission_closed_prefix="ALSO_RAN_ADMISSION_CLOSED_V1"
+# Deliberately NOT a prefix of (or prefixed by) serial_prefix: the broker scans
+# serial port 1 for serial_prefix and base64-decodes whatever follows it, so a
+# diagnostic carrying that marker would be read as a malformed receipt and
+# quarantine the slot instead of explaining why it was suppressed.
+readonly serial_diagnostic_prefix="ALSO_RAN_DRAIN_SUPPRESSED_V1"
+# Serial output stops being readable once the VM is TERMINATED, but guest
+# attributes survive it (shutdown regression). A host that powers itself
+# off therefore needs the receipt here as well. Serial stays the channel the
+# broker reads today; this copy is written second and is best effort.
+readonly guest_attributes_url="http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/also-ran"
+
+# Values carry the same base64 payload as the serial line so both channels
+# decode identically. A failure is logged and never suppresses the serial copy.
+publish_guest_attribute() {
+  local key="$1" value="$2" error
+  if ! error="$(curl --fail --silent --show-error \
+    --connect-timeout 2 --max-time 5 \
+    --request PUT \
+    --header "Metadata-Flavor: Google" \
+    --data-binary "${value}" \
+    "${guest_attributes_url}/${key}" 2>&1)"; then
+    printf 'guest attribute also-ran/%s not written: %s\n' "${key}" "${error}" \
+      | systemd-cat --identifier=also-ran-drain --priority=warning
+  fi
+}
+
+# journald on these hosts is local-only and dies with the VM, so every
+# suppression also goes to the serial console -- the one channel that outlives
+# the instance and that an operator can read back later with
+# `gcloud compute instances get-serial-port-output --port=1`.
+suppress() {
+  # A diagnostic quotes fields straight out of an untrusted receipt, and the
+  # broker looks for serial_prefix by unanchored substring search over the
+  # whole serial history. A receipt field containing that marker would turn
+  # this line into a garbled receipt candidate and quarantine the slot
+  # instead of reporting the suppression, so the marker never survives here.
+  local message="${1//${serial_prefix}/[receipt-marker]}"
+  message="${message//${admission_closed_prefix}/[admission-closed-marker]}"
+  printf 'receipt suppressed: %s\n' "${message}" \
+    | systemd-cat --identifier=also-ran-drain --priority=warning
+  printf '%s %s\n' "${serial_diagnostic_prefix}" "${message}" >>"${serial_device}" || true
+  exit 0
+}
+
+if [[ "${SERVICE_RESULT:-}" != success || "${EXIT_CODE:-}" != exited || "${EXIT_STATUS:-}" != 0 ]]; then
+  suppress "$(printf 'unsuccessful Outrunner exit: result=%s code=%s status=%s' \
+    "${SERVICE_RESULT:-unknown}" "${EXIT_CODE:-unknown}" "${EXIT_STATUS:-unknown}")"
+fi
+
+if [[ ! -f "${receipt_path}" ]]; then
+  suppress "$(printf '%s is absent' "${receipt_path}")"
+fi
+
+# Outrunner writes the receipt only after it has closed admission, stopped all
+# environments, and deregistered every JIT runner. Publish that narrow fact
+# separately before validating the richer job history. The controller may use
+# this identity-bound acknowledgement to recover a host whose full receipt is
+# malformed, but it can never infer admission closure from polling alone.
+readonly admission_closed_filter='
+{
+  version: 1,
+  status: "admission_closed",
+  scale_set: .scale_set,
+  closed_at: .drained_at,
+  identity: .identity
+}
+| select(
+    (.scale_set | type) == "string"
+    and (.scale_set | test("^[a-z0-9][a-z0-9-]{2,62}$"))
+    and (.closed_at | type) == "string"
+    and (.identity | type) == "object"
+    and (.identity.provider == "gcp")
+    and (.identity.instance_id | test("^[0-9]+$"))
+    and (.identity.boot_id | test("^[0-9a-f-]{36}$"))
+  )
+'
+if ! admission_closed="$(jq --compact-output --sort-keys \
+  "${admission_closed_filter}" "${receipt_path}" 2>/dev/null)" \
+  || [[ -z "${admission_closed}" ]]; then
+  suppress "receipt cannot prove identity-bound admission closure"
+fi
+admission_closed_base64="$(printf '%s' "${admission_closed}" | base64 --wrap=0)"
+# The marker is on the persistent boot disk. The Outrunner unit condition
+# consumes it on every start, so a reboot cannot reopen admission after this
+# acknowledgement has been published. Move it into place atomically before
+# exposing the acknowledgement to the controller.
+admission_closed_tmp="${admission_closed_path}.tmp.$$"
+trap 'rm -f "${admission_closed_tmp}"' EXIT
+: >"${admission_closed_tmp}"
+chmod 0600 "${admission_closed_tmp}"
+printf '%s\n' "${admission_closed}" >"${admission_closed_tmp}"
+mv "${admission_closed_tmp}" "${admission_closed_path}"
+if ! sync --file-system "${admission_closed_path}"; then
+  suppress "admission-closed marker could not be made durable"
+fi
+printf '%s %s\n' "${admission_closed_prefix}" "${admission_closed_base64}" >>"${serial_device}"
+publish_guest_attribute admission-closed "${admission_closed_base64}"
+
+# This filter must never reject a receipt that the controller's
+# validate_drain_receipt() would accept. A publisher stricter than the broker
+# does not fail closed -- it publishes nothing at all, and a slot with no
+# receipt is neither drained nor quarantined nor idle-confirmed, so it is
+# invisible to every reap path and its host bills forever. That is exactly how
+# v3 external drains were stranded: the `reason` key that v3 is allowed to
+# carry was only ever admitted on the v2 branch.
+readonly receipt_filter='
+def required: ["completed_jobs","drained_at","identity","jobs","max_jobs","scale_set","status","version"];
+def with_reason: (required + ["reason"] | sort);
+(
+  (.version == 1 and (keys == required))
+  or (.version == 2 and (keys == with_reason))
+  or (.version == 3 and ((keys == required) or (keys == with_reason)))
+  or (.version == 4 and (keys == with_reason))
+)
+and .status == "drained"
+and ((.completed_jobs | type) == "number")
+and (.completed_jobs >= (if (.version == 2 or .version == 4) then 0 else 1 end))
+and ((.max_jobs | type) == "number")
+and (.max_jobs >= 1)
+and ((.version == 2) or has("reason") or (.max_jobs == .completed_jobs))
+and ((.jobs | type) == "array")
+and ((.jobs | length) == .completed_jobs)
+and (if .version == 4 then
+  ((.reason == "external") or (.reason == "idle") or
+   (.reason == "max_jobs" and .completed_jobs >= .max_jobs))
+  else ((has("reason") | not) or (.reason == "external")) end)
+and (.identity.provider == "gcp")
+and (.identity.instance_id | test("^[0-9]+$"))
+and (.identity.boot_id | test("^[0-9a-f-]{36}$"))
+'
+
+if ! jq --exit-status "${receipt_filter}" "${receipt_path}" >/dev/null 2>&1; then
+  summary="$(jq --compact-output --sort-keys \
+    '{version, status, completed_jobs, max_jobs, jobs: (.jobs | length), reason}' \
+    "${receipt_path}" 2>/dev/null)" || summary='<unparseable>'
+  suppress "$(printf 'receipt failed validation: %s' "${summary}")"
+fi
+
+receipt_base64="$(base64 --wrap=0 "${receipt_path}")"
+printf '%s %s\n' "${serial_prefix}" "${receipt_base64}" >>"${serial_device}"
+publish_guest_attribute receipt "${receipt_base64}"
+printf 'published drain receipt to GCP serial console\n' \
+  | systemd-cat --identifier=also-ran-drain --priority=info

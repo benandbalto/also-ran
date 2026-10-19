@@ -1,0 +1,10 @@
+[Unit]
+Description=Emit also-ran runner reliability telemetry to journald
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/also-ran-runner-telemetry-sample
+
+[Install]
+WantedBy=multi-user.target

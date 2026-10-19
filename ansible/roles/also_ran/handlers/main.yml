@@ -1,0 +1,52 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+- name: Restart also-ran GCP timer
+  ansible.builtin.systemd_service:
+    name: also-ran-gcp.timer
+    enabled: '{{ also_ran_gcp_timers_enabled }}'
+    state: restarted
+  when:
+  - also_ran_gcp_timers_enabled | bool
+  - not ansible_check_mode
+- name: Restart also-ran GCP scale-up timer
+  ansible.builtin.systemd_service:
+    name: also-ran-gcp-scale-up.timer
+    enabled: '{{ also_ran_gcp_timers_enabled }}'
+    state: restarted
+  when:
+  - also_ran_gcp_timers_enabled | bool
+  - not ansible_check_mode
+- name: Restart also-ran GCP reconciler
+  ansible.builtin.systemd_service:
+    name: also-ran-gcp-reconciler.service
+    enabled: true
+    state: restarted
+  when:
+  - also_ran_gcp_reconciler_active | bool
+  - not ansible_check_mode
+- name: Restart also-ran GCP market observer timer
+  ansible.builtin.systemd_service:
+    name: also-ran-gcp-market-observer.timer
+    enabled: '{{ also_ran_gcp_market_observer_enabled }}'
+    state: restarted
+  when:
+  - also_ran_gcp_market_observer_enabled | bool
+  - not ansible_check_mode
+- name: Restart also-ran GCP run telemetry timer
+  ansible.builtin.systemd_service:
+    name: also-ran-gcp-run-telemetry.timer
+    enabled: '{{ also_ran_gcp_run_telemetry_enabled }}'
+    state: restarted
+  when:
+  - also_ran_gcp_run_telemetry_enabled | bool
+  - not ansible_check_mode
+- name: Restart also-ran GitHub token timer
+  ansible.builtin.systemd_service:
+    name: also-ran-github-token.timer
+    enabled: true
+    state: restarted
+  when:
+  - also_ran_github_app_enabled | bool
+  - not ansible_check_mode

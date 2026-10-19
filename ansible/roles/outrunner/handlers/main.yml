@@ -1,0 +1,10 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart Outrunner when enabled
+  ansible.builtin.systemd_service:
+    name: outrunner
+    state: restarted
+  when: outrunner_service_enabled | bool

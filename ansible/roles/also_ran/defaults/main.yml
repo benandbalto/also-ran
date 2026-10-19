@@ -1,0 +1,22 @@
+---
+also_ran_source: '{{ playbook_dir }}/../../controller/also-ran/also_ran.py'
+also_ran_gcp_broker_source: '{{ playbook_dir }}/../../controller/also-ran/gcp_broker.py'
+also_ran_gcp_market_observer_source: '{{ playbook_dir }}/../../controller/also-ran/gcp_market_observer.py'
+also_ran_gcp_run_telemetry_source: '{{ playbook_dir }}/../../controller/also-ran/gcp_run_telemetry.py'
+also_ran_gcp_lifecycle_source: '{{ playbook_dir }}/../../scripts/gcp-runner-lifecycle.py'
+also_ran_gcp_policy_source: ''
+also_ran_github_credential_source: ''
+# Keyless on GCE by default. File modes require an explicit choice.
+also_ran_gcp_auth_mode: attached_service_account
+also_ran_gcp_controller_credential_source: ''
+also_ran_gcp_broker_enabled: true
+also_ran_gcp_broker_apply: false
+also_ran_gcp_general_broker_apply: false
+also_ran_gcp_reconciler_enabled: false
+also_ran_gcp_market_observer_enabled: true
+also_ran_gcp_run_telemetry_enabled: true
+also_ran_github_app_id: ''
+also_ran_github_app_installation_id: ''
+also_ran_github_app_key_source: ''
+also_ran_github_app_token_source: '{{ playbook_dir }}/../../controller/also-ran/github_app_token.py'
+also_ran_deployment_source: ''

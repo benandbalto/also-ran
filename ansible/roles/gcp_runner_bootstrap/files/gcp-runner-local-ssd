@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# Move Docker's and Sysbox's writable state onto the disposable Titanium local SSD.
+#
+# Usage: gcp-runner-local-ssd JOB_IMAGE
+#
+# Two ways to populate Docker's data root on the SSD, tried in this order:
+#
+# lazy-lowers  Copy only Docker's metadata. Each baked image layer's
+#              overlay2/<id>/diff stays on the boot disk and is exposed at the
+#              same path under the new data root by a read-only bind mount.
+#              Container writable layers, volumes and build cache are created
+#              on the SSD. About 1 second instead of about 50 seconds.
+# full-copy    cp -a the whole store, as every host did before lazy-lowers.
+#
+# lazy-lowers depends on overlay2's private on-disk layout (overlay2/<id>/diff
+# keyed by layerdb cache-id). Every precondition and post-check below is there
+# so that a layout or runtime change falls back to full-copy instead of
+# failing the boot. Re-check it on every Docker or Sysbox upgrade.
+set -euo pipefail
+
+if [[ $# -ne 1 || -z "$1" ]]; then
+  echo "usage: gcp-runner-local-ssd JOB_IMAGE" >&2
+  exit 2
+fi
+readonly job_image="$1"
+readonly local_ssd_device=/dev/disk/by-id/google-local-nvme-ssd-0
+readonly local_ssd_mount=/mnt/disks/titanium
+readonly docker_source=/var/lib/docker
+readonly docker_root="${local_ssd_mount}/docker"
+readonly sysbox_state=/var/lib/sysbox
+readonly daemon_json=/etc/docker/daemon.json
+readonly marker="${local_ssd_mount}/.also-ran-ci-local-ssd"
+
+log() {
+  printf 'gcp-runner-local-ssd: %s\n' "$*"
+}
+
+elapsed() {
+  awk -v start="$1" -v end="${EPOCHREALTIME}" 'BEGIN { printf "%.2f", end - start }'
+}
+
+same_device() {
+  [[ "$(readlink --canonicalize-existing "$1")" \
+    == "$(readlink --canonicalize-existing "${local_ssd_device}")" ]]
+}
+
+mount_source() {
+  local source
+  source="$(findmnt --noheadings --output SOURCE --target "$1")"
+  printf '%s' "${source%%\[*}"
+}
+
+stop_runtimes() {
+  systemctl stop docker.service docker.socket
+  systemctl stop sysbox.service
+}
+
+start_runtimes() {
+  systemctl start sysbox.service && systemctl start docker.service
+}
+
+# The checks every host has always made after Docker restarts on the SSD.
+verify_docker_root() {
+  local root
+  root="$(docker info --format '{{.DockerRootDir}}')"
+  if [[ "${root}" != "${docker_root}" ]]; then
+    echo "Docker data root did not move to Titanium SSD" >&2
+    return 1
+  fi
+  if ! same_device "$(mount_source "${docker_root}")"; then
+    echo "Docker data root is not backed by the Titanium SSD" >&2
+    return 1
+  fi
+}
+
+mounts_under_docker_root() {
+  findmnt --list --noheadings --output TARGET \
+    | awk -v root="${docker_root}/" 'index($0, root) == 1'
+}
+
+# Runs in a subshell with errexit, so any failing command abandons the attempt.
+# skip() records why a precondition does not hold.
+lazy_lowers() {
+  local reason_file="$1"
+  skip() {
+    printf '%s\n' "$1" >"${reason_file}"
+    exit 1
+  }
+  local layerdb="${docker_source}/image/overlay2/layerdb/sha256"
+  local driver snapshotter cache_file id entry name started
+  local -A image_layers=()
+  local -a layers=()
+
+  driver="$(jq --raw-output '."storage-driver" // ""' "${daemon_json}")"
+  [[ "${driver}" == overlay2 ]] || skip "storage-driver is '${driver}', not overlay2"
+  snapshotter="$(jq --raw-output '.features."containerd-snapshotter"' "${daemon_json}")"
+  [[ "${snapshotter}" == false ]] || skip "containerd-snapshotter is not disabled"
+  [[ -d "${docker_source}/overlay2/l" && -d "${layerdb}" ]] \
+    || skip "unexpected Docker store layout"
+  [[ -z "$(find "${docker_source}/containers" -mindepth 1 -print -quit 2>/dev/null)" ]] \
+    || skip "baked store holds containers"
+
+  for cache_file in "${layerdb}"/*/cache-id; do
+    [[ -f "${cache_file}" ]] || skip "no image layers in layerdb"
+    id="$(<"${cache_file}")"
+    [[ "${id}" =~ ^[0-9a-f]{64}$ ]] || skip "unexpected layer cache-id"
+    image_layers["${id}"]=1
+  done
+  for entry in "${docker_source}"/overlay2/*; do
+    name="${entry##*/}"
+    [[ "${name}" == l ]] && continue
+    [[ -n "${image_layers[${name}]:-}" ]] || skip "overlay2/${name} is not an image layer"
+    [[ -d "${entry}/diff" && ! -L "${entry}/diff" ]] || skip "overlay2/${name} has no diff directory"
+    layers+=("${name}")
+  done
+  (( ${#layers[@]} == ${#image_layers[@]} )) || skip "an image layer is missing from overlay2"
+
+  started="${EPOCHREALTIME}"
+  (cd "${docker_source}" \
+    && find . -regextype posix-extended -regex '\./overlay2/[^/]+/diff' -prune -o -print0) \
+    | tar --create --file=- --directory="${docker_source}" --xattrs --xattrs-include='*' \
+      --null --no-recursion --files-from=- \
+    | tar --extract --file=- --directory="${docker_root}" --xattrs --xattrs-include='*' \
+      --preserve-permissions --same-owner
+  for id in "${layers[@]}"; do
+    install -d -o root -g root -m 0700 "${docker_root}/overlay2/${id}/diff"
+    mount --bind "${docker_source}/overlay2/${id}/diff" "${docker_root}/overlay2/${id}/diff"
+    mount -o remount,bind,ro "${docker_root}/overlay2/${id}/diff"
+    [[ "$(findmnt --noheadings --output OPTIONS --mountpoint "${docker_root}/overlay2/${id}/diff")" \
+      =~ (^|,)ro(,|$) ]] || skip "overlay2/${id}/diff is not mounted read-only"
+  done
+
+  start_runtimes || skip "Docker or Sysbox did not start"
+  verify_docker_root || skip "Docker data root check failed"
+  [[ "$(docker info --format '{{.Driver}}')" == overlay2 ]] || skip "Docker is not using overlay2"
+  timeout --kill-after=10s 120s \
+    docker run --rm --pull=never --network=none --entrypoint /bin/true "${job_image}" \
+    || skip "job image smoke run failed"
+  log "docker_store=lazy-lowers layers=${#layers[@]} seconds=$(elapsed "${started}")"
+}
+
+# Undo a failed lazy-lowers attempt. Refuses to delete anything while a mount
+# is left under the data root, because that mount could be the boot-disk store.
+discard_lazy_attempt() {
+  local target remaining
+  systemctl stop docker.service docker.socket || true
+  systemctl stop sysbox.service || true
+  while read -r target; do
+    if [[ -n "${target}" ]]; then
+      umount "${target}" || true
+    fi
+  done < <(mounts_under_docker_root | sort --reverse)
+  remaining="$(mounts_under_docker_root)"
+  if [[ -n "${remaining}" ]]; then
+    echo "Cannot discard the lazy Docker store; mounts remain under ${docker_root}" >&2
+    return 1
+  fi
+  rm -rf --one-file-system "${docker_root}"
+  install -d -o root -g root -m 0711 "${docker_root}"
+}
+
+full_copy() {
+  local started="${EPOCHREALTIME}"
+  cp -a "${docker_source}/." "${docker_root}/"
+  start_runtimes
+  verify_docker_root
+  log "docker_store=full-copy seconds=$(elapsed "${started}")"
+}
+
+for _ in $(seq 1 180); do
+  [[ -b "${local_ssd_device}" ]] && break
+  sleep 1
+done
+if [[ ! -b "${local_ssd_device}" ]]; then
+  echo "Titanium SSD device did not appear: ${local_ssd_device}" >&2
+  exit 1
+fi
+
+stop_runtimes
+if ! blkid "${local_ssd_device}" >/dev/null 2>&1; then
+  # A fresh local SSD reads as zeroes (256 random 1 MiB reads found no
+  # non-zero byte), so skip mkfs's whole-device discard of all 375 GB (about
+  # 5 seconds), its zeroing of the 1 GiB journal (about 3 seconds), and the
+  # kernel's background zeroing of ~6 GB of inode tables while jobs run.
+  # The journal stays.
+  mkfs.ext4 -F -m 0 -E nodiscard,assume_storage_prezeroed=1 -L also-ran-ci-local "${local_ssd_device}"
+fi
+install -d -o root -g root -m 0755 "${local_ssd_mount}"
+if ! mountpoint --quiet "${local_ssd_mount}"; then
+  mount -o discard "${local_ssd_device}" "${local_ssd_mount}"
+fi
+install -d -o root -g root -m 0711 "${docker_root}"
+# Start write-back as soon as 64 MiB is dirty, so the SSD absorbs a copy while
+# it is still reading the boot disk. With the default ratio, about 3 GB of a
+# full copy stays dirty and dockerd's overlay2 probe waits for all of it. The
+# setting lasts for this boot only, which is the host's whole life.
+sysctl --quiet --write vm.dirty_background_bytes=67108864
+
+# Sysbox stores each job's nested Docker volume outside the outer overlay.
+# Bind it to the same disposable SSD before either runtime admits containers.
+install -d -o root -g root -m 0711 "${local_ssd_mount}/sysbox" "${sysbox_state}"
+if ! mountpoint --quiet "${sysbox_state}"; then
+  cp -a "${sysbox_state}/." "${local_ssd_mount}/sysbox/"
+  mount --bind "${local_ssd_mount}/sysbox" "${sysbox_state}"
+fi
+if ! same_device "$(mount_source "${sysbox_state}")"; then
+  echo "Nested Docker data root is not backed by the Titanium SSD" >&2
+  exit 1
+fi
+
+daemon_config="$(mktemp)"
+reason_file="$(mktemp)"
+trap 'rm -f "${daemon_config}" "${reason_file}"' EXIT
+if [[ -s "${daemon_json}" ]]; then
+  jq --arg root "${docker_root}" '. + {"data-root": $root}' "${daemon_json}" >"${daemon_config}"
+else
+  jq -n --arg root "${docker_root}" '{"data-root": $root}' >"${daemon_config}"
+fi
+install -o root -g root -m 0644 "${daemon_config}" "${daemon_json}"
+
+# errexit applies inside this subshell because it is not part of a condition.
+set +e
+(
+  set -eE
+  trap 'printf "%s exited %s\n" "${BASH_COMMAND}" "$?" >"${reason_file}"' ERR
+  lazy_lowers "${reason_file}"
+)
+lazy_status=$?
+set -e
+if [[ "${lazy_status}" -eq 0 ]]; then
+  docker_store=lazy-lowers
+else
+  reason="$(head -n 1 "${reason_file}")"
+  log "docker_store=lazy-lowers abandoned reason=${reason:-exit ${lazy_status}}; falling back to full-copy"
+  discard_lazy_attempt
+  full_copy
+  docker_store=full-copy
+fi
+printf 'docker_store=%s\n' "${docker_store}" >"${marker}"

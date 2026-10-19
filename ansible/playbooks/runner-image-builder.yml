@@ -1,0 +1,24 @@
+---
+- name: Build credential-free also-ran runner image
+  hosts: image_builders
+  become: true
+  gather_facts: true
+
+  vars:
+    outrunner_service_enabled: false
+    telemetry_credential_required: false
+    telemetry_service_enabled: false
+    telemetry_axiom_token: ""
+    outrunner_scale_set_name: __RUNNER_SCALE_SET__
+    telemetry_runner_pool: __RUNNER_POOL__
+
+  roles:
+    - role: base
+    - role: docker
+      vars:
+        docker_runner_isolation: true
+        docker_default_shm_size: "{{ '1g' if ansible_facts['product_name'] == 'Google Compute Engine' else '' }}"
+    - role: outrunner
+    - role: telemetry
+    - role: gcp_runner_bootstrap
+    - role: runner_image_finalize

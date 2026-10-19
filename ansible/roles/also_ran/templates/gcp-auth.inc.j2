@@ -1,0 +1,12 @@
+# Every gcloud command, including child lifecycle commands and REST token reads,
+# inherits the same isolated authentication context. No operator login is used.
+RuntimeDirectory=also-ran-gcloud-%N
+Environment=CLOUDSDK_CONFIG=%t/also-ran-gcloud-%N
+Environment=CLOUDSDK_CORE_DISABLE_USAGE_REPORTING=true
+UnsetEnvironment=GOOGLE_APPLICATION_CREDENTIALS CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_AUTH_ACCESS_TOKEN_FILE CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT CLOUDSDK_CORE_ACCOUNT CLOUDSDK_ACTIVE_CONFIG_NAME CLOUDSDK_AUTH_LOGIN_CONFIG_FILE CLOUDSDK_AUTH_DISABLE_CREDENTIALS GCE_METADATA_HOST GCE_METADATA_IP GCE_METADATA_ROOT
+{% if also_ran_gcp_auth_mode == 'attached_service_account' %}
+UnsetEnvironment=CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE
+{% else %}
+LoadCredential=gcp-controller-key:/etc/also-ran/gcp-controller-key.json
+Environment=CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=%d/gcp-controller-key
+{% endif %}

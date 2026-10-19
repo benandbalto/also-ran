@@ -1,0 +1,6 @@
+{
+  "project_id": "also-ran-ci-runners",
+  "project_number": "123456789012",
+  "resource_prefix": "also-ran",
+  "fleet": "also-ran-ci"
+}

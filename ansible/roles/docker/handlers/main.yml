@@ -1,0 +1,7 @@
+---
+- name: Restart Docker
+  ansible.builtin.systemd_service:
+    name: docker
+    state: restarted
+  # In check mode on a fresh host the package is only predicted, so the unit does not exist yet.
+  when: not ansible_check_mode or 'docker.io' in ansible_facts.packages

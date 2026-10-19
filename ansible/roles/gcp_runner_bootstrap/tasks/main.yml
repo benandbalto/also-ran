@@ -1,0 +1,212 @@
+---
+- name: Validate GCP runner bootstrap inputs
+  tags: gcp_image_scope_guard
+  ansible.builtin.assert:
+    that:
+      - gcp_runner_bootstrap_project_id is match('^[a-z][a-z0-9-]{4,28}[a-z0-9]$')
+      - gcp_runner_bootstrap_project_number is match('^[0-9]+$')
+      - gcp_runner_bootstrap_github_secret is match('^[a-z0-9-]+$')
+      - not telemetry_enabled | bool or gcp_runner_bootstrap_axiom_secret is match('^[a-z0-9-]+$')
+      - outrunner_scale_set_name == '__RUNNER_SCALE_SET__'
+      - telemetry_runner_pool == '__RUNNER_POOL__'
+    fail_msg: "GCP runner bootstrap inputs are incomplete or unsafe."
+
+- name: Require organization registration on GCP image builders
+  tags: gcp_image_scope_guard
+  ansible.builtin.assert:
+    that:
+      - outrunner_github_url is match('^https://github.com/[A-Za-z0-9][A-Za-z0-9-]{0,38}$')
+    fail_msg: >-
+      GCP golden images must use organization runner registration; set outrunner_github_url to your organization URL.
+  when: ansible_facts['product_name'] == 'Google Compute Engine'
+
+- name: Disable unattended package updates on disposable runner hosts
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/99-runner-no-unattended-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "0";
+      APT::Periodic::Unattended-Upgrade "0";
+
+- name: Prevent apt timers from interrupting CI jobs
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    masked: true
+    state: stopped
+  loop:
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
+
+- name: Install available security and package updates in the golden image
+  ansible.builtin.apt:
+    upgrade: safe
+    update_cache: true
+    lock_timeout: 600
+
+- name: Install the GCP runner bootstrap script
+  ansible.builtin.template:
+    src: gcp-runner-bootstrap.sh.j2
+    dest: /usr/local/sbin/gcp-runner-bootstrap
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the GCP runner local SSD relocation script
+  ansible.builtin.copy:
+    src: gcp-runner-local-ssd
+    dest: /usr/local/sbin/gcp-runner-local-ssd
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Create the Outrunner runtime state directory
+  ansible.builtin.file:
+    path: /var/lib/outrunner
+    state: directory
+    owner: outrunner
+    group: outrunner
+    mode: "0750"
+
+- name: Install the GCP drain receipt publisher
+  ansible.builtin.template:
+    src: gcp-publish-drain-receipt.sh.j2
+    dest: /usr/local/sbin/gcp-publish-drain-receipt
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the GCP runner drain reaper
+  ansible.builtin.template:
+    src: gcp-runner-reaper.sh.j2
+    dest: /usr/local/sbin/gcp-runner-reaper
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the GCP runner drain reaper service
+  ansible.builtin.template:
+    src: gcp-runner-reaper.service.j2
+    dest: /etc/systemd/system/gcp-runner-reaper.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the GCP runner drain reaper timer
+  ansible.builtin.template:
+    src: gcp-runner-reaper.timer.j2
+    dest: /etc/systemd/system/gcp-runner-reaper.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the GCP drain receipt systemd override
+  ansible.builtin.template:
+    src: outrunner-drain-receipt.conf.j2
+    dest: /etc/systemd/system/outrunner.service.d/gcp-drain-receipt.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Allow executable shared memory in GCP job containers
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/outrunner.service.d/gcp-exec-shm.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Service]
+      Environment=OUTRUNNER_DOCKER_EXEC_SHM=1
+  when: ansible_facts['product_name'] == 'Google Compute Engine'
+
+- name: Create the systemd manager drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Bound the default stop timeout for a disposable runner host
+  ansible.builtin.template:
+    src: fast-stop-manager.conf.j2
+    dest: /etc/systemd/system.conf.d/10-runner-fast-stop.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create drop-in directories for agents that stall poweroff
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ gcp_runner_bootstrap_fast_stop_units }}"
+
+- name: Bound the stop timeout of agents that stall poweroff
+  ansible.builtin.template:
+    src: fast-stop-unit.conf.j2
+    dest: "/etc/systemd/system/{{ item }}.d/runner-fast-stop.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ gcp_runner_bootstrap_fast_stop_units }}"
+
+- name: Create the logind drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/logind.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Bound how long a shutdown inhibitor can delay poweroff
+  ansible.builtin.template:
+    src: fast-stop-logind.conf.j2
+    # Same name as the package drop-in in /usr/lib, which it replaces; any other name
+    # sorts before it and loses to its InhibitDelayMaxSec=30.
+    dest: /etc/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the GCP runner bootstrap unit
+  ansible.builtin.template:
+    src: gcp-runner-bootstrap.service.j2
+    dest: /etc/systemd/system/gcp-runner-bootstrap.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable GCP runner bootstrap for first boot
+  ansible.builtin.systemd_service:
+    name: gcp-runner-bootstrap.service
+    enabled: true
+    state: stopped
+    daemon_reload: true
+
+- name: Enable the GCP runner drain reaper timer
+  ansible.builtin.systemd_service:
+    name: gcp-runner-reaper.timer
+    enabled: true
+    state: stopped
+    daemon_reload: true
+
+- name: Install the runner listener readiness observer
+  ansible.builtin.copy:
+    src: runner-readiness.py
+    dest: /usr/local/sbin/also-ran-runner-readiness
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the runner listener readiness service
+  ansible.builtin.copy:
+    src: runner-readiness.service
+    dest: /etc/systemd/system/also-ran-runner-readiness.service
+    owner: root
+    group: root
+    mode: "0644"

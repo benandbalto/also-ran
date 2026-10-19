@@ -1,0 +1,10 @@
+---
+url: "{{ outrunner_github_url }}"
+
+runners:
+  "{{ outrunner_scale_set_name }}":
+    labels: {{ outrunner_labels | to_json }}
+    max_runners: {{ outrunner_max_runners }}
+    docker:
+      image: "{{ outrunner_runner_image }}"
+      runner_cmd: /usr/local/bin/runner-with-docker

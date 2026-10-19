@@ -1,0 +1,26 @@
+---
+- name: Install Sysbox package prerequisites
+  ansible.builtin.apt:
+    name: jq
+    state: present
+
+- name: Download checksum-pinned Sysbox runtime
+  ansible.builtin.get_url:
+    url: https://github.com/nestybox/sysbox/releases/download/v0.7.1/sysbox-ce_0.7.1.linux_amd64.deb
+    dest: /var/tmp/sysbox-ce_0.7.1.linux_amd64.deb
+    checksum: sha256:9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install Sysbox for isolated nested Docker
+  ansible.builtin.apt:
+    deb: /var/tmp/sysbox-ce_0.7.1.linux_amd64.deb
+    state: present
+
+- name: Enable the isolated container runtime
+  ansible.builtin.systemd_service:
+    name: sysbox
+    enabled: true
+    state: started
+  when: not ansible_check_mode or 'sysbox-ce' in ansible_facts.packages

@@ -1,0 +1,15 @@
+[Unit]
+Description=Bootstrap a GCP also-ran runner from instance metadata and Secret Manager
+ConditionPathExists=!/var/lib/outrunner/admission-closed.json
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=15min
+ExecStartPre=/usr/bin/test ! -e /var/lib/outrunner/admission-closed.json
+ExecStart=/usr/local/sbin/gcp-runner-bootstrap
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

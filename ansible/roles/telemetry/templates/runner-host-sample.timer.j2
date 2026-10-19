@@ -1,0 +1,11 @@
+[Unit]
+Description=Sample also-ran runner reliability telemetry every {{ telemetry_collection_interval }}
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec={{ telemetry_collection_interval }}
+AccuracySec=1s
+Unit=also-ran-runner-telemetry-sample.service
+
+[Install]
+WantedBy=timers.target

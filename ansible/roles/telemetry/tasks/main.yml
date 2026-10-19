@@ -1,0 +1,34 @@
+---
+- name: Install optional Axiom telemetry
+  ansible.builtin.include_tasks: enabled.yml
+  when: telemetry_enabled | bool
+
+- name: Inspect optional guest telemetry units, including timers
+  ansible.builtin.command:
+    argv: [systemctl, show, --property=LoadState, --value, '{{ item }}']
+  loop:
+    - otelcol-contrib.service
+    - also-ran-runner-telemetry-sample.timer
+    - also-ran-runner-telemetry-sample.service
+  register: telemetry_unit_load_states
+  changed_when: false
+  failed_when: telemetry_unit_load_states.rc != 0 and telemetry_unit_load_states.stdout | trim != 'not-found'
+  check_mode: false
+  when: not telemetry_enabled | bool
+
+- name: Stop and disable previously installed guest telemetry
+  ansible.builtin.systemd_service:
+    name: "{{ item.item }}"
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  loop: "{{ telemetry_unit_load_states.results | default([]) }}"
+  when:
+    - not telemetry_enabled | bool
+    - item.stdout | default('not-found') | trim != 'not-found'
+
+- name: Remove the optional ingest credential when telemetry is disabled
+  ansible.builtin.file:
+    path: /etc/otelcol-contrib/otelcol-contrib.conf
+    state: absent
+  when: not telemetry_enabled | bool

@@ -1,0 +1,14 @@
+[Unit]
+Description=Observe the first GitHub Actions runner listener session
+After=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/also-ran-runner-readiness
+SyslogIdentifier=also-ran-runner-lifecycle
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

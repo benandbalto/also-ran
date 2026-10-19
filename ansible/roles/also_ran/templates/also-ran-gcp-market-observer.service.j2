@@ -1,0 +1,30 @@
+[Unit]
+Description=also-ran GCP regional market observer
+After=network-online.target
+Wants=network-online.target
+OnFailure=also-ran-failure@%n.service
+
+[Service]
+Type=oneshot
+User=also-ran
+Group=also-ran
+ExecStart=/usr/bin/python3 /opt/also-ran/gcp_market_observer.py --policy /etc/also-ran/gcp-policy.json --broker-state /var/lib/also-ran/gcp-state.json --state /var/lib/also-ran/gcp-market-state.json --lock /run/also-ran/gcp-market-lock
+{% include 'gcp-auth.inc.j2' %}
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+RuntimeDirectory=also-ran
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/also-ran
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+UMask=0077

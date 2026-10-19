@@ -1,0 +1,11 @@
+[Unit]
+Description=Report an also-ran unit failure for %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemd-cat --identifier=also-ran-failure --priority=err /usr/bin/printf "also-ran unit failed: %i\n"
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict

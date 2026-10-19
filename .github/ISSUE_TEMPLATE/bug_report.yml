@@ -1,0 +1,24 @@
+name: Bug report
+description: Report unexpected behavior with a synthetic reproduction.
+body:
+  - type: markdown
+    attributes:
+      value: "For vulnerabilities, use Security → Report a vulnerability. Never include credentials or private job payloads."
+  - type: input
+    id: version
+    attributes:
+      label: Commit or release
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction and expected behavior
+      description: Include sanitized configuration, command and observed output.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python, pool, region and authentication mode. Use synthetic project identities.

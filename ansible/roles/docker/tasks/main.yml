@@ -1,0 +1,53 @@
+---
+- name: Gather installed package facts for check-mode safety
+  ansible.builtin.package_facts:
+    manager: auto
+
+- name: Install Docker Engine from the distribution repository
+  ansible.builtin.apt:
+    name:
+      - docker.io
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Configure isolated Docker for runner hosts
+  ansible.builtin.include_tasks: sysbox.yml
+  when: docker_runner_isolation | default(false) | bool
+
+- name: Configure bounded Docker logging
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {
+        {% if docker_runner_isolation | default(false) | bool %}
+        "features": {"containerd-snapshotter": false},
+        "storage-driver": "overlay2",
+        "default-runtime": "sysbox-runc",
+        "runtimes": {"sysbox-runc": {"path": "/usr/bin/sysbox-runc"}},
+        {% endif %}
+        {% if docker_default_shm_size | default('') %}
+        "default-shm-size": "{{ docker_default_shm_size }}",
+        {% endif %}
+        "log-driver": "local",
+        "log-opts": {
+          "max-size": "50m",
+          "max-file": "3"
+        }
+      }
+  notify: Restart Docker
+
+- name: Enable Docker
+  ansible.builtin.systemd_service:
+    name: docker
+    enabled: true
+    state: started
+  # In check mode on a fresh host the package is only predicted, so the unit does not exist yet.
+  when: not ansible_check_mode or 'docker.io' in ansible_facts.packages
+
+- name: Apply runner runtime configuration before building job images
+  ansible.builtin.meta: flush_handlers
+  when: docker_runner_isolation | default(false) | bool

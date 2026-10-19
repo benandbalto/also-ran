@@ -1,0 +1,94 @@
+{
+  "policy_version": 1,
+  "subscription_id": "00000000-0000-4000-8000-000000000002",
+  "resource_group": "also-ran-ci-runners",
+  "location": "eastus",
+  "image_source_commit": "1b12e6ad9d3bb1f3723851b3bb4db95c8f65d977",
+  "rollout": {
+    "phase": 1,
+    "acceptance_region": "eastus",
+    "acceptance_size": "Standard_E2as_v5",
+    "maximum_hosts": 1,
+    "outrunner_max_runners": 1,
+    "automatic_delete": false
+  },
+  "target": {
+    "lifecycle": "broker-created-disposable-spot",
+    "size": "Standard_F8as_v6",
+    "candidate_regions": [
+      "eastus",
+      "eastus2",
+      "centralus",
+      "westus2",
+      "westus3",
+      "northcentralus"
+    ],
+    "automatic_delete_after_drain": true
+  },
+  "gallery": {
+    "name": "also-ran_ci_runner_gallery",
+    "image_definition": "also-ran_runner_ubuntu2404"
+  },
+  "network": {
+    "vnet": "also-ran-ci-runners-vnet",
+    "subnet": "runner-hosts",
+    "nsg": "also-ran-ci-runners-nsg",
+    "address_prefix": "10.43.0.0/24",
+    "subnet_prefix": "10.43.0.0/26",
+    "ssh_source_cidrs": ["192.0.2.10/32", "192.0.2.11/32"]
+  },
+  "builder": {
+    "name": "also-ran-runner-image-builder-azure",
+    "nic_name": "also-ran-runner-image-builder-azureVMNic",
+    "public_ip_name": "also-ran-runner-image-builder-azurePublicIP",
+    "size": "Standard_D4as_v6",
+    "base_image": "Canonical:ubuntu-24_04-lts:server:latest",
+    "os_disk_size_gb": 256,
+    "tags": {
+      "managed-by": "also-ran-image-builder",
+      "fleet": "also-ran-ci",
+      "lifecycle": "image-build",
+      "provider": "azure"
+    }
+  },
+  "burst": {
+    "name": "also-ran-runner-burst-azure-01",
+    "nic_name": "also-ran-runner-burst-azure-01VMNic",
+    "public_ip_name": "also-ran-runner-burst-azure-01PublicIP",
+    "size": "Standard_E2as_v5",
+    "os_disk_size_gb": 256,
+    "tags": {
+      "managed-by": "runner-autoscaler",
+      "fleet": "also-ran-ci",
+      "lifecycle": "burst",
+      "autoscale-slot": "burst-01",
+      "provider": "azure",
+      "hold": "true"
+    }
+  },
+  "paid_acceptance": {
+    "name": "also-ran-runner-paid-azure-01",
+    "nic_name": "also-ran-runner-paid-azure-01VMNic",
+    "public_ip_name": "also-ran-runner-paid-azure-01PublicIP",
+    "location": "eastus2",
+    "size": "Standard_F8s_v2",
+    "os_disk_size_gb": 256,
+    "network": {
+      "vnet": "also-ran-ci-runners-vnet-eastus2",
+      "subnet": "runner-hosts",
+      "nsg": "also-ran-ci-runners-nsg-eastus2",
+      "address_prefix": "10.44.0.0/24",
+      "subnet_prefix": "10.44.0.0/26",
+      "ssh_source_cidrs": ["192.0.2.10/32", "192.0.2.11/32"]
+    },
+    "tags": {
+      "managed-by": "runner-autoscaler",
+      "fleet": "also-ran-ci",
+      "lifecycle": "acceptance",
+      "autoscale-slot": "paid-acceptance-01",
+      "provider": "azure",
+      "billing": "standard",
+      "hold": "true"
+    }
+  }
+}

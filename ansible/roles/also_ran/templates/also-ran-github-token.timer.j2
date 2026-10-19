@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the also-ran GitHub App installation token every 20 minutes
+
+[Timer]
+# Installation tokens last an hour. Every unit loads the file when it starts,
+# so a token is at most 20 minutes old when a tick begins.
+OnBootSec=30s
+OnUnitActiveSec=20min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

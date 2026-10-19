@@ -1,0 +1,381 @@
+---
+- name: Validate credential inputs
+  ansible.builtin.assert:
+    that:
+    - "also_ran_github_credential_source | length > 0 or (also_ran_github_app_installation_id | string | length > 0\n    and\
+      \ also_ran_github_app_key_source | length > 0)"
+    - "not also_ran_github_app_enabled | bool or (also_ran_github_app_id | string is match('^[0-9]+$')\n    and also_ran_github_app_installation_id\
+      \ | string is match('^[0-9]+$')\n    and also_ran_github_app_key_source | length > 0)"
+    - also_ran_gcp_auth_mode in ['attached_service_account', 'workload_identity_federation', 'service_account_key']
+    - (also_ran_gcp_controller_credential_source | length == 0) == (also_ran_gcp_auth_mode == 'attached_service_account')
+    - also_ran_deployment_source | length > 0
+    - also_ran_gcp_policy_source | length > 0
+    fail_msg: Credential source paths are required and must remain outside the repository.
+- name: Validate explicit GCP credential type before changing the host
+  ansible.builtin.command:
+    argv:
+    - '{{ ansible_playbook_python }}'
+    - '{{ role_path }}/files/validate_gcp_credentials.py'
+    - '{{ also_ran_gcp_auth_mode }}'
+    stdin: "{{ lookup('ansible.builtin.file', also_ran_gcp_controller_credential_source) }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: also_ran_gcp_auth_mode != 'attached_service_account'
+- name: Create also-ran system group
+  ansible.builtin.group:
+    name: also-ran
+    system: true
+- name: Create also-ran system user
+  ansible.builtin.user:
+    name: also-ran
+    group: also-ran
+    system: true
+    shell: /usr/sbin/nologin
+    home: /var/lib/also-ran
+    create_home: false
+- name: Create also-ran directories
+  ansible.builtin.file:
+    path: '{{ item.path }}'
+    state: directory
+    owner: '{{ item.owner }}'
+    group: also-ran
+    mode: '{{ item.mode }}'
+  loop:
+  - path: /opt/also-ran
+    owner: root
+    mode: '0755'
+  - path: /etc/also-ran
+    owner: root
+    mode: '0750'
+  - path: /var/lib/also-ran
+    owner: also-ran
+    mode: '0750'
+  - path: /var/lib/also-ran-github
+    owner: root
+    mode: '2750'
+- name: Discover installed GCP broker timers
+  ansible.builtin.stat:
+    path: /etc/systemd/system/{{ item }}
+  register: also_ran_gcp_timer_units
+  loop:
+  - also-ran-gcp.timer
+  - also-ran-gcp-scale-up.timer
+- name: Quiesce GCP broker timers before replacing code and units
+  ansible.builtin.systemd_service:
+    name: '{{ item.item }}'
+    state: stopped
+  loop: '{{ also_ran_gcp_timer_units.results }}'
+  when:
+  - not ansible_check_mode
+  - item.stat.exists
+- name: Discover installed GCP reconciler
+  ansible.builtin.stat:
+    path: /etc/systemd/system/also-ran-gcp-reconciler.service
+  register: also_ran_gcp_reconciler_unit
+- name: Quiesce GCP reconciler before replacing code and units
+  ansible.builtin.systemd_service:
+    name: also-ran-gcp-reconciler.service
+    state: stopped
+  when:
+  - not ansible_check_mode
+  - also_ran_gcp_reconciler_unit.stat.exists
+- name: Discover installed GCP broker services
+  ansible.builtin.stat:
+    path: /etc/systemd/system/{{ item }}
+  register: also_ran_gcp_service_units
+  loop:
+  - also-ran-gcp.service
+  - also-ran-gcp-scale-up.service
+- name: Wait for in-flight GCP broker passes to finish
+  ansible.builtin.command: systemctl show --property=ActiveState --value {{ item.item }}
+  register: also_ran_gcp_quiesce
+  changed_when: false
+  until: (also_ran_gcp_quiesce.stdout | trim) not in ['active', 'activating', 'reloading', 'deactivating']
+  retries: 190
+  delay: 5
+  loop: '{{ also_ran_gcp_service_units.results }}'
+  when:
+  - not ansible_check_mode
+  - item.stat.exists
+- name: Install deployment identity validator
+  ansible.builtin.copy:
+    src: '{{ also_ran_gcp_broker_source | dirname }}/deployment_identity.py'
+    dest: /opt/also-ran/deployment_identity.py
+    owner: root
+    group: root
+    mode: '0644'
+- name: Install deployment identity
+  ansible.builtin.copy:
+    src: '{{ also_ran_deployment_source }}'
+    dest: /opt/also-ran/deployment.json
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+  - Restart also-ran GCP timer
+  - Restart also-ran GCP scale-up timer
+  - Restart also-ran GCP reconciler
+  - Restart also-ran GCP market observer timer
+  - Restart also-ran GCP run telemetry timer
+- name: Install also-ran program
+  ansible.builtin.copy:
+    src: '{{ also_ran_source }}'
+    dest: /opt/also-ran/also_ran.py
+    owner: root
+    group: root
+    mode: '0755'
+  notify:
+  - Restart also-ran GCP timer
+  - Restart also-ran GCP scale-up timer
+  - Restart also-ran GCP reconciler
+  - Restart also-ran GCP market observer timer
+  - Restart also-ran GCP run telemetry timer
+- name: Install GCP capacity broker
+  ansible.builtin.copy:
+    src: '{{ item.src }}'
+    dest: '{{ item.dest }}'
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+  - src: '{{ also_ran_gcp_broker_source }}'
+    dest: /opt/also-ran/gcp_broker.py
+  - src: '{{ also_ran_gcp_broker_source | dirname }}/gcp_pools.py'
+    dest: /opt/also-ran/gcp_pools.py
+  - src: '{{ also_ran_gcp_broker_source | dirname }}/gcp_reconciler.py'
+    dest: /opt/also-ran/gcp_reconciler.py
+  - src: '{{ role_path }}/../gcp_runner_bootstrap/templates/gcp-runner-reaper.sh.j2'
+    dest: /opt/also-ran/gcp-runner-reaper.sh
+  - src: '{{ also_ran_gcp_lifecycle_source }}'
+    dest: /opt/also-ran/gcp-runner-lifecycle.py
+  notify:
+  - Restart also-ran GCP timer
+  - Restart also-ran GCP scale-up timer
+  - Restart also-ran GCP reconciler
+  - Restart also-ran GCP market observer timer
+  - Restart also-ran GCP run telemetry timer
+- name: Install GCP market observer
+  ansible.builtin.copy:
+    src: '{{ also_ran_gcp_market_observer_source }}'
+    dest: /opt/also-ran/gcp_market_observer.py
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart also-ran GCP market observer timer
+- name: Install fleet measurement helpers
+  ansible.builtin.copy:
+    src: '{{ also_ran_gcp_run_telemetry_source | dirname }}/fleet_measurements.py'
+    dest: /opt/also-ran/fleet_measurements.py
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart also-ran GCP run telemetry timer
+- name: Install GCP run telemetry collector
+  ansible.builtin.copy:
+    src: '{{ also_ran_gcp_run_telemetry_source }}'
+    dest: /opt/also-ran/gcp_run_telemetry.py
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart also-ran GCP run telemetry timer
+- name: Install reviewed GCP production policy
+  ansible.builtin.copy:
+    src: '{{ also_ran_gcp_policy_source }}'
+    dest: /etc/also-ran/gcp-policy.json
+    owner: root
+    group: also-ran
+    mode: '0640'
+  notify:
+  - Restart also-ran GCP timer
+  - Restart also-ran GCP scale-up timer
+  - Restart also-ran GCP reconciler
+  - Restart also-ran GCP market observer timer
+  - Restart also-ran GCP run telemetry timer
+- name: Install explicit GCP provider credentials
+  ansible.builtin.copy:
+    src: '{{ item.src }}'
+    dest: '{{ item.dest }}'
+    owner: root
+    group: also-ran
+    mode: '0640'
+  no_log: true
+  loop:
+  - src: '{{ also_ran_gcp_controller_credential_source }}'
+    dest: /etc/also-ran/gcp-controller-key.json
+  when: also_ran_gcp_auth_mode != 'attached_service_account'
+  notify:
+  - Restart also-ran GCP timer
+  - Restart also-ran GCP scale-up timer
+  - Restart also-ran GCP reconciler
+  - Restart also-ran GCP market observer timer
+  - Restart also-ran GCP run telemetry timer
+- name: Remove obsolete copied GCP credential in attached-service-account mode
+  ansible.builtin.file:
+    path: /etc/also-ran/gcp-controller-key.json
+    state: absent
+  when: also_ran_gcp_auth_mode == 'attached_service_account'
+- name: Install GitHub personal token
+  ansible.builtin.copy:
+    src: '{{ also_ran_github_credential_source }}'
+    dest: /etc/also-ran/github-token
+    owner: root
+    group: also-ran
+    mode: '0640'
+  no_log: true
+  when: not also_ran_github_app_enabled | bool
+  notify:
+  - Restart also-ran GCP timer
+  - Restart also-ran GCP scale-up timer
+  - Restart also-ran GCP run telemetry timer
+- name: Install GitHub App private key
+  ansible.builtin.copy:
+    src: '{{ also_ran_github_app_key_source }}'
+    dest: /etc/also-ran/github-app-key.pem
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+  when: also_ran_github_app_enabled | bool
+  notify: Restart also-ran GitHub token timer
+- name: Install GitHub App token minter
+  ansible.builtin.copy:
+    src: '{{ also_ran_github_app_token_source }}'
+    dest: /opt/also-ran/github_app_token.py
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart also-ran GitHub token timer
+- name: Install GitHub App token systemd units
+  ansible.builtin.template:
+    src: '{{ item.src }}'
+    dest: '{{ item.dest }}'
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+  - src: also-ran-github-token.service.j2
+    dest: /etc/systemd/system/also-ran-github-token.service
+  - src: also-ran-github-token.timer.j2
+    dest: /etc/systemd/system/also-ran-github-token.timer
+  notify:
+  - Reload systemd
+  - Restart also-ran GitHub token timer
+- name: Mint the first GitHub App token
+  ansible.builtin.systemd_service:
+    name: also-ran-github-token.service
+    state: started
+    daemon_reload: true
+  when:
+  - also_ran_github_app_enabled | bool
+  - not ansible_check_mode
+- name: Enable GitHub App token timer
+  ansible.builtin.systemd_service:
+    name: also-ran-github-token.timer
+    enabled: '{{ also_ran_github_app_enabled | bool }}'
+    state: '{{ also_ran_github_app_enabled | bool | ternary(''started'', ''stopped'') }}'
+    daemon_reload: true
+  when: not ansible_check_mode
+- name: Install systemd failure reporter
+  ansible.builtin.template:
+    src: also-ran-failure@.service.j2
+    dest: /etc/systemd/system/also-ran-failure@.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+- name: Install GCP broker systemd units
+  ansible.builtin.template:
+    src: '{{ item.src }}'
+    dest: '{{ item.dest }}'
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+  - src: also-ran-gcp.service.j2
+    dest: /etc/systemd/system/also-ran-gcp.service
+  - src: also-ran-gcp.timer.j2
+    dest: /etc/systemd/system/also-ran-gcp.timer
+  - src: also-ran-gcp-scale-up.service.j2
+    dest: /etc/systemd/system/also-ran-gcp-scale-up.service
+  - src: also-ran-gcp-scale-up.timer.j2
+    dest: /etc/systemd/system/also-ran-gcp-scale-up.timer
+  - src: also-ran-gcp-reconciler.service.j2
+    dest: /etc/systemd/system/also-ran-gcp-reconciler.service
+  notify:
+  - Reload systemd
+  - Restart also-ran GCP timer
+  - Restart also-ran GCP scale-up timer
+  - Restart also-ran GCP reconciler
+- name: Install GCP market observer systemd units
+  ansible.builtin.template:
+    src: '{{ item.src }}'
+    dest: '{{ item.dest }}'
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+  - src: also-ran-gcp-market-observer.service.j2
+    dest: /etc/systemd/system/also-ran-gcp-market-observer.service
+  - src: also-ran-gcp-market-observer.timer.j2
+    dest: /etc/systemd/system/also-ran-gcp-market-observer.timer
+  notify:
+  - Reload systemd
+  - Restart also-ran GCP market observer timer
+- name: Install GCP run telemetry systemd units
+  ansible.builtin.template:
+    src: '{{ item.src }}'
+    dest: '{{ item.dest }}'
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+  - src: also-ran-gcp-run-telemetry.service.j2
+    dest: /etc/systemd/system/also-ran-gcp-run-telemetry.service
+  - src: also-ran-gcp-run-telemetry.timer.j2
+    dest: /etc/systemd/system/also-ran-gcp-run-telemetry.timer
+  notify:
+  - Reload systemd
+  - Restart also-ran GCP run telemetry timer
+- name: Enable also-ran GCP broker timer
+  ansible.builtin.systemd_service:
+    name: also-ran-gcp.timer
+    enabled: '{{ also_ran_gcp_timers_enabled }}'
+    state: '{{ also_ran_gcp_timers_enabled | ternary(''started'', ''stopped'') }}'
+    daemon_reload: true
+  when: not ansible_check_mode
+- name: Enable also-ran GCP scale-up timer
+  ansible.builtin.systemd_service:
+    name: also-ran-gcp-scale-up.timer
+    enabled: '{{ also_ran_gcp_timers_enabled }}'
+    state: '{{ also_ran_gcp_timers_enabled | ternary(''started'', ''stopped'') }}'
+    daemon_reload: true
+  when: not ansible_check_mode
+- name: Enable also-ran GCP reconciler
+  ansible.builtin.systemd_service:
+    name: also-ran-gcp-reconciler.service
+    enabled: '{{ also_ran_gcp_reconciler_active }}'
+    state: '{{ also_ran_gcp_reconciler_active | ternary(''started'', ''stopped'') }}'
+    daemon_reload: true
+  when: not ansible_check_mode
+- name: Enable also-ran GCP market observer timer
+  ansible.builtin.systemd_service:
+    name: also-ran-gcp-market-observer.timer
+    enabled: '{{ also_ran_gcp_market_observer_enabled }}'
+    state: '{{ also_ran_gcp_market_observer_enabled | ternary(''started'', ''stopped'') }}'
+    daemon_reload: true
+  when: not ansible_check_mode
+- name: Enable also-ran GCP run telemetry timer
+  ansible.builtin.systemd_service:
+    name: also-ran-gcp-run-telemetry.timer
+    enabled: '{{ also_ran_gcp_run_telemetry_enabled }}'
+    state: '{{ also_ran_gcp_run_telemetry_enabled | ternary(''started'', ''stopped'') }}'
+    daemon_reload: true
+  when: not ansible_check_mode
+- name: Remove the personal token once the App token is in use
+  ansible.builtin.file:
+    path: /etc/also-ran/github-token
+    state: absent
+  when: also_ran_github_app_enabled | bool

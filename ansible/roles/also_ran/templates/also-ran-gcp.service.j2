@@ -1,0 +1,38 @@
+[Unit]
+Description=also-ran GCP capacity broker
+After=network-online.target
+Wants=network-online.target
+OnFailure=also-ran-failure@%n.service
+
+[Service]
+Environment=ALSO_RAN_GITHUB_BUDGET=/var/lib/also-ran/github-budget.json
+Type=oneshot
+# A 28-host receipt scan can exceed 15 minutes under the shared GitHub budget.
+TimeoutStartSec=45min
+KillMode=control-group
+User=also-ran
+Group=also-ran
+ExecStart=/usr/bin/python3 /opt/also-ran/gcp_pools.py --policy /etc/also-ran/gcp-policy.json --market-state /var/lib/also-ran/gcp-market-state.json --github-token-file %d/github-token --lifecycle-script /opt/also-ran/gcp-runner-lifecycle.py --once --maintenance-only --heavy-mode {{ also_ran_gcp_broker_apply | bool | ternary('apply', 'dry-run') }} --general-mode {{ also_ran_gcp_general_broker_apply | bool | ternary('apply', 'dry-run') }}
+LoadCredential=github-token:{{ also_ran_github_token_path }}
+{% include 'gcp-auth.inc.j2' %}
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+RuntimeDirectory=also-ran
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/also-ran
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

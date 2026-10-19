@@ -1,0 +1,12 @@
+---
+# Derived from also_ran_gcp_broker_enabled and also_ran_gcp_reconciler_enabled
+# so the timers and the reconciler can never both be on.
+also_ran_gcp_reconciler_active: >-
+  {{ (also_ran_gcp_broker_enabled | bool) and (also_ran_gcp_reconciler_enabled | bool) }}
+also_ran_gcp_timers_enabled: >-
+  {{ (also_ran_gcp_broker_enabled | bool) and not (also_ran_gcp_reconciler_enabled | bool) }}
+# Derived, so an inventory cannot set them out of step with the inputs.
+also_ran_github_app_enabled: "{{ also_ran_github_app_id | string | length > 0 }}"
+also_ran_github_token_path: >-
+  {{ also_ran_github_app_enabled | bool
+     | ternary('/var/lib/also-ran-github/github-token', '/etc/also-ran/github-token') }}

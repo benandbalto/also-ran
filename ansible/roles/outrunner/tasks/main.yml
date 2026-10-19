@@ -1,0 +1,113 @@
+---
+- name: Download pinned Outrunner package
+  ansible.builtin.get_url:
+    url: "{{ outrunner_deb_url }}"
+    dest: "/var/tmp/outrunner_{{ outrunner_version }}_linux_amd64.deb"
+    checksum: "sha256:{{ outrunner_deb_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install pinned Outrunner package
+  ansible.builtin.apt:
+    deb: "/var/tmp/outrunner_{{ outrunner_version }}_linux_amd64.deb"
+    state: present
+  environment:
+    OUTRUNNER_NO_REPO: "1"
+
+- name: Allow Outrunner to provision isolated job containers
+  ansible.builtin.user:
+    name: outrunner
+    groups: docker
+    append: true
+
+- name: Create also-ran runner image build directory
+  ansible.builtin.file:
+    path: /etc/outrunner/image
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install pinned also-ran runner image definition
+  ansible.builtin.copy:
+    src: Dockerfile.also-ran
+    dest: /etc/outrunner/image/Dockerfile
+    owner: root
+    group: root
+    mode: "0644"
+  register: outrunner_image_definition
+
+- name: Install per-job Docker startup wrapper
+  ansible.builtin.copy:
+    src: runner-with-docker
+    dest: /etc/outrunner/image/runner-with-docker
+    owner: root
+    group: root
+    mode: "0755"
+  register: outrunner_docker_wrapper
+
+- name: Install locked E2E tool dependencies
+  ansible.builtin.copy:
+    src: e2e-tools/
+    dest: /etc/outrunner/image/e2e-tools/
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+  register: outrunner_e2e_tools
+
+- name: Inspect the pinned also-ran runner image
+  ansible.builtin.command:
+    cmd: "docker image inspect {{ outrunner_runner_image }}"
+  register: outrunner_image_inspect
+  changed_when: false
+  failed_when: false
+
+- name: Build the pinned also-ran runner image
+  ansible.builtin.command:
+    cmd: >-
+      docker build
+      --file /etc/outrunner/image/Dockerfile
+      --tag {{ outrunner_runner_image }}
+      /etc/outrunner/image
+  when: >-
+    outrunner_image_definition.changed or outrunner_docker_wrapper.changed
+    or outrunner_e2e_tools.changed or outrunner_image_inspect.rc != 0
+  changed_when: true
+  notify: Restart Outrunner when enabled
+
+- name: Install Outrunner configuration
+  ansible.builtin.template:
+    src: config.yml.j2
+    dest: /etc/outrunner/config.yml
+    owner: root
+    group: outrunner
+    mode: "0640"
+  notify: Restart Outrunner when enabled
+
+- name: Install systemd credential override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/outrunner.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install systemd credential override
+  ansible.builtin.template:
+    src: credential.conf.j2
+    dest: /etc/systemd/system/outrunner.service.d/credential.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart Outrunner when enabled
+
+- name: Set Outrunner service state
+  ansible.builtin.systemd_service:
+    name: outrunner
+    enabled: "{{ outrunner_service_enabled }}"
+    state: "{{ outrunner_service_enabled | ternary('started', 'stopped') }}"
+    daemon_reload: true

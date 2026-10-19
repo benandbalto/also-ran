@@ -1,0 +1,174 @@
+---
+- name: Validate runner telemetry configuration
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == "Debian"
+      - ansible_architecture == "x86_64"
+      - telemetry_collection_interval is match('^[1-9][0-9]*s$')
+      - telemetry_axiom_endpoint is match('^https://[^/]+$')
+      - telemetry_axiom_metrics_dataset is match('^[A-Za-z0-9._-]+$')
+      - telemetry_axiom_logs_dataset is match('^[A-Za-z0-9._-]+$')
+      - outrunner_scale_set_name | length > 0
+      - telemetry_runner_pool == '__RUNNER_POOL__' or telemetry_runner_pool is match('^[a-z0-9-]+$')
+    fail_msg: "Runner telemetry variables are incomplete or invalid."
+
+- name: Gather installed package facts for check-mode safety
+  ansible.builtin.package_facts:
+    manager: auto
+
+- name: Download pinned OpenTelemetry Collector package
+  ansible.builtin.get_url:
+    url: >-
+      {{ 'https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v'
+         ~ telemetry_otelcol_version ~ '/otelcol-contrib_' ~ telemetry_otelcol_version
+         ~ '_linux_amd64.deb' }}
+    dest: "/var/tmp/otelcol-contrib_{{ telemetry_otelcol_version }}_linux_amd64.deb"
+    checksum: "sha256:{{ telemetry_otelcol_deb_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install pinned OpenTelemetry Collector package
+  ansible.builtin.apt:
+    deb: "/var/tmp/otelcol-contrib_{{ telemetry_otelcol_version }}_linux_amd64.deb"
+    state: present
+  when: not ansible_check_mode or 'otelcol-contrib' in ansible_facts.packages
+
+- name: Allow the collector to read the system journal
+  ansible.builtin.user:
+    name: otelcol-contrib
+    groups: systemd-journal
+    append: true
+  notify: Restart OpenTelemetry Collector
+  when: not ansible_check_mode or 'otelcol-contrib' in ansible_facts.packages
+
+- name: Inspect the existing Axiom credential file
+  ansible.builtin.stat:
+    path: /etc/otelcol-contrib/otelcol-contrib.conf
+  register: telemetry_axiom_credential_file
+  when: not ansible_check_mode or 'otelcol-contrib' in ansible_facts.packages
+
+- name: Require an Axiom token for first-time provisioning
+  ansible.builtin.assert:
+    that:
+      - >-
+        telemetry_axiom_token | length > 0 or
+        ('otelcol-contrib' in ansible_facts.packages and
+        telemetry_axiom_credential_file.stat.exists)
+    fail_msg: >-
+      Set AXIOM_TOKEN to an ingest token with write access to vm-metrics and vm-logs
+      for the first provision of this host.
+  when:
+    - not ansible_check_mode
+    - telemetry_axiom_credential_file.stat is defined
+    - telemetry_credential_required | bool
+  no_log: true
+
+- name: Install the Axiom ingest credential
+  ansible.builtin.template:
+    src: otelcol-contrib.conf.j2
+    dest: /etc/otelcol-contrib/otelcol-contrib.conf
+    owner: root
+    group: otelcol-contrib
+    mode: "0640"
+  when:
+    - not ansible_check_mode or 'otelcol-contrib' in ansible_facts.packages
+    - telemetry_axiom_token | length > 0
+  notify: Restart OpenTelemetry Collector
+  no_log: true
+
+- name: Create durable journal cursor storage
+  ansible.builtin.file:
+    path: /var/lib/otelcol-contrib/journal
+    state: directory
+    owner: otelcol-contrib
+    group: otelcol-contrib
+    mode: "0700"
+  when: not ansible_check_mode or 'otelcol-contrib' in ansible_facts.packages
+
+- name: Install the OpenTelemetry Collector configuration
+  ansible.builtin.template:
+    src: config.yml.j2
+    dest: /etc/otelcol-contrib/config.yaml
+    owner: root
+    group: otelcol-contrib
+    mode: "0640"
+  notify: Restart OpenTelemetry Collector
+  when: not ansible_check_mode or 'otelcol-contrib' in ansible_facts.packages
+
+- name: Install the runner reliability telemetry sampler
+  ansible.builtin.template:
+    src: runner-host-sample.sh.j2
+    dest: /usr/local/sbin/also-ran-runner-telemetry-sample
+    owner: root
+    group: root
+    mode: "0755"
+  when: not ansible_check_mode or 'otelcol-contrib' in ansible_facts.packages
+
+- name: Install the runner reliability telemetry service
+  ansible.builtin.template:
+    src: runner-host-sample.service.j2
+    dest: /etc/systemd/system/also-ran-runner-telemetry-sample.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: not ansible_check_mode or 'otelcol-contrib' in ansible_facts.packages
+
+- name: Install the runner reliability telemetry timer
+  ansible.builtin.template:
+    src: runner-host-sample.timer.j2
+    dest: /etc/systemd/system/also-ran-runner-telemetry-sample.timer
+    owner: root
+    group: root
+    mode: "0644"
+  when: not ansible_check_mode or 'otelcol-contrib' in ansible_facts.packages
+
+- name: Validate the installed collector configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/otelcol-contrib
+      - validate
+      - --config=/etc/otelcol-contrib/config.yaml
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Set the OpenTelemetry Collector service state
+  ansible.builtin.systemd_service:
+    name: otelcol-contrib
+    enabled: "{{ telemetry_service_enabled }}"
+    state: "{{ telemetry_service_enabled | ternary('started', 'stopped') }}"
+    daemon_reload: true
+  when: not ansible_check_mode or 'otelcol-contrib' in ansible_facts.packages
+
+- name: Set the runner reliability telemetry timer state
+  ansible.builtin.systemd_service:
+    name: also-ran-runner-telemetry-sample.timer
+    enabled: "{{ telemetry_service_enabled }}"
+    state: "{{ telemetry_service_enabled | ternary('started', 'stopped') }}"
+    daemon_reload: true
+  when: not ansible_check_mode or 'otelcol-contrib' in ansible_facts.packages
+
+- name: Apply pending collector changes before the health check
+  ansible.builtin.meta: flush_handlers
+  when: not ansible_check_mode or 'otelcol-contrib' in ansible_facts.packages
+
+- name: Verify the local collector health endpoint
+  ansible.builtin.uri:
+    url: http://127.0.0.1:13133/
+    status_code: 200
+  register: telemetry_health
+  retries: 5
+  delay: 2
+  until: telemetry_health.status == 200
+  when:
+    - not ansible_check_mode
+    - telemetry_service_enabled | bool
+
+- name: Report first-install check-mode limitation
+  ansible.builtin.debug:
+    msg: >-
+      The pinned package download is predicted. Package-dependent configuration
+      is validated by repository checks now and by the role after first install.
+  when:
+    - ansible_check_mode
+    - "'otelcol-contrib' not in ansible_facts.packages"

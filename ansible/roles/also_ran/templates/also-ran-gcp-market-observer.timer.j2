@@ -1,0 +1,11 @@
+[Unit]
+Description=Observe the GCP regional runner market hourly
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

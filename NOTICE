@@ -1,0 +1,9 @@
+also-ran
+Copyright 2026 also-ran contributors
+
+Originally developed in ArborealMgmt/arboreal-ops. This standalone distribution
+contains the runner capacity controller and related deployment components.
+
+The optional Outrunner package is downloaded separately from
+https://github.com/ArborealMgmt/gha-outrunner and is licensed under MIT.
+It is not relicensed by this project.

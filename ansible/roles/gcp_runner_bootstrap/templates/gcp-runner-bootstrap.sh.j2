@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly metadata_url="http://metadata.google.internal/computeMetadata/v1"
+readonly metadata_header="Metadata-Flavor: Google"
+readonly project_number="{{ gcp_runner_bootstrap_project_number }}"
+readonly state_dir="/var/lib/gcp-runner-bootstrap"
+readonly complete_marker="${state_dir}/complete"
+
+if [[ -e "${complete_marker}" ]]; then
+  exit 0
+fi
+
+bootstrap_started_at="$(date --utc +%FT%TZ)"
+bootstrap_started_uptime="$(cut -d' ' -f1 /proc/uptime)"
+umask 077
+install -d -o root -g root -m 0700 "${state_dir}"
+
+metadata_attribute() {
+  curl --fail --silent --show-error --retry 10 --retry-all-errors \
+    --connect-timeout 2 --max-time 10 \
+    --header "${metadata_header}" \
+    "${metadata_url}/instance/attributes/$1"
+}
+
+metadata_value() {
+  curl --fail --silent --show-error --retry 10 --retry-all-errors \
+    --connect-timeout 2 --max-time 10 \
+    --header "${metadata_header}" \
+    "${metadata_url}/$1"
+}
+
+access_token() {
+  curl --fail --silent --show-error --retry 10 --retry-all-errors \
+    --connect-timeout 2 --max-time 10 \
+    --header "${metadata_header}" \
+    "${metadata_url}/instance/service-accounts/default/token" \
+    | jq --exit-status --raw-output '.access_token'
+}
+
+secret_value() {
+  local secret_name="$1"
+  local token
+  token="$(access_token)"
+  curl --fail --silent --show-error --retry 10 --retry-all-errors \
+    --connect-timeout 2 --max-time 20 \
+    --header "Authorization: Bearer ${token}" \
+    "https://secretmanager.googleapis.com/v1/projects/${project_number}/secrets/${secret_name}/versions/latest:access" \
+    | jq --exit-status --raw-output '.payload.data' \
+    | base64 --decode
+}
+
+scale_set="$(metadata_attribute runner-scale-set)"
+diagnostic_label="$(metadata_attribute runner-label)"
+autoscale_slot="$(metadata_attribute runner-slot)"
+image_source_commit="$(metadata_attribute runner-image-source-commit)"
+include_shared_label="$(metadata_attribute runner-include-shared-label)"
+use_local_ssd="$(metadata_attribute runner-use-local-ssd)"
+max_jobs="$(metadata_attribute runner-max-jobs)"
+instance_id="$(metadata_value instance/id)"
+instance_name="$(metadata_value instance/name)"
+zone_path="$(metadata_value instance/zone)"
+zone="${zone_path##*/}"
+project_id="$(metadata_value project/project-id)"
+boot_id="$(tr -d '\n' </proc/sys/kernel/random/boot_id)"
+if [[ ! "${scale_set}" =~ ^[a-z0-9][a-z0-9-]{2,62}$ ]]; then
+  echo "invalid runner-scale-set metadata" >&2
+  exit 1
+fi
+if [[ ! "${diagnostic_label}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,62}$ ]]; then
+  echo "invalid runner-label metadata" >&2
+  exit 1
+fi
+if [[ "${include_shared_label}" != enabled && "${include_shared_label}" != disabled ]]; then
+  echo "invalid runner-include-shared-label metadata" >&2
+  exit 1
+fi
+if [[ "${use_local_ssd}" != enabled && "${use_local_ssd}" != disabled ]]; then
+  echo "invalid runner-use-local-ssd metadata" >&2
+  exit 1
+fi
+if [[ ! "${max_jobs}" =~ ^([1-9]|10)$ ]]; then
+  echo "invalid runner-max-jobs metadata" >&2
+  exit 1
+fi
+if [[ ! "${autoscale_slot}" =~ ^gcp-(drain|prod|general)-[0-9]{2}$ ]]; then
+  echo "invalid runner-slot metadata" >&2
+  exit 1
+fi
+case "${autoscale_slot}" in
+  gcp-prod-*) runner_pool=heavy ;;
+  gcp-general-*) runner_pool=general ;;
+  gcp-drain-*) runner_pool=acceptance ;;
+esac
+if [[ ! "${image_source_commit}" =~ ^[0-9a-f]{12}$ ]]; then
+  echo "invalid runner-image-source-commit metadata" >&2
+  exit 1
+fi
+if [[ ! "${instance_id}" =~ ^[0-9]+$ ]]; then
+  echo "invalid numeric GCP instance ID" >&2
+  exit 1
+fi
+if [[ ! "${instance_name}" =~ ^[a-z][a-z0-9-]{2,62}$ ]]; then
+  echo "invalid GCP instance name" >&2
+  exit 1
+fi
+if [[ ! "${zone}" =~ ^[a-z]+-[a-z0-9]+[0-9]-[a-z]$ ]]; then
+  echo "invalid GCP instance zone" >&2
+  exit 1
+fi
+if [[ "${project_id}" != {{ gcp_runner_bootstrap_project_id | quote }} ]]; then
+  echo "unexpected GCP project" >&2
+  exit 1
+fi
+if [[ ! "${boot_id}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+  echo "invalid boot ID" >&2
+  exit 1
+fi
+
+metadata_finished_uptime="$(cut -d' ' -f1 /proc/uptime)"
+if [[ "${use_local_ssd}" == enabled ]]; then
+  /usr/local/sbin/gcp-runner-local-ssd "{{ outrunner_runner_image }}"
+fi
+
+storage_finished_uptime="$(cut -d' ' -f1 /proc/uptime)"
+install -d -o root -g outrunner -m 0750 /etc/outrunner
+{
+  cat <<EOF
+---
+url: "{{ outrunner_github_url }}"
+
+runners:
+  "${scale_set}":
+    labels:
+EOF
+  if [[ "${include_shared_label}" == enabled ]]; then
+    printf '      - "%s"\n' '{{ gcp_runner_bootstrap_shared_label }}'
+  fi
+  cat <<EOF
+      - "${diagnostic_label}"
+    max_runners: 1
+    # One pre-registered runner, so a job starts on a runner already online
+    # (outrunner idle_runners, gha-outrunner#15). Admission closing reaps it.
+    idle_runners: 1
+    max_jobs: ${max_jobs}
+    drain_receipt:
+      path: /var/lib/outrunner/drain-receipt.json
+      identity:
+        provider: "gcp"
+        project_id: "${project_id}"
+        instance_id: "${instance_id}"
+        instance_name: "${instance_name}"
+        zone: "${zone}"
+        autoscale_slot: "${autoscale_slot}"
+        boot_id: "${boot_id}"
+        image_source_commit: "${image_source_commit}"
+    docker:
+      image: "{{ outrunner_runner_image }}"
+      runner_cmd: /usr/local/bin/runner-with-docker
+EOF
+} >/etc/outrunner/config.yml
+chown root:outrunner /etc/outrunner/config.yml
+chmod 0640 /etc/outrunner/config.yml
+
+secret_value "{{ gcp_runner_bootstrap_github_secret }}" \
+  | systemd-creds encrypt --name=github-token - /etc/outrunner/github-token.cred
+chown root:root /etc/outrunner/github-token.cred
+chmod 0600 /etc/outrunner/github-token.cred
+
+{% if telemetry_enabled | bool %}
+install -d -o root -g otelcol-contrib -m 0750 /etc/otelcol-contrib
+{
+  printf '%s\n' 'OTELCOL_OPTIONS="--config=/etc/otelcol-contrib/config.yaml"'
+  printf 'AXIOM_TOKEN='
+  secret_value "{{ gcp_runner_bootstrap_axiom_secret }}"
+  printf '\n'
+} >/etc/otelcol-contrib/otelcol-contrib.conf
+chown root:otelcol-contrib /etc/otelcol-contrib/otelcol-contrib.conf
+chmod 0640 /etc/otelcol-contrib/otelcol-contrib.conf
+
+for path in \
+  /etc/otelcol-contrib/config.yaml \
+  /usr/local/sbin/also-ran-runner-telemetry-sample; do
+  if ! grep --quiet --fixed-strings '__RUNNER_SCALE_SET__' "${path}"; then
+    echo "runner scale-set placeholder missing from ${path}" >&2
+    exit 1
+  fi
+  sed --in-place "s/__RUNNER_SCALE_SET__/${scale_set}/g" "${path}"
+done
+for path in \
+  /etc/otelcol-contrib/config.yaml \
+  /usr/local/sbin/also-ran-runner-telemetry-sample; do
+  if ! grep --quiet --fixed-strings '__RUNNER_POOL__' "${path}"; then
+    echo "runner pool placeholder missing from ${path}" >&2
+    exit 1
+  fi
+  sed --in-place "s/__RUNNER_POOL__/${runner_pool}/g" "${path}"
+done
+
+{% endif %}
+# Persist generation identity for the host sampler; contains no credentials.
+jq -cn --arg instance_id "${instance_id}" --arg boot_id "${boot_id}" \
+  --arg zone "${zone}" --arg image_source_commit "${image_source_commit}" \
+  --arg pool "${runner_pool}" --arg runner_scale_set "${scale_set}" \
+  --arg boot_started_at "$(python3 -c 'import datetime,time; print(datetime.datetime.fromtimestamp(time.time()-time.clock_gettime(time.CLOCK_BOOTTIME),datetime.timezone.utc).isoformat())')" \
+  '{instance_id:$instance_id,boot_id:$boot_id,zone:$zone,image_source_commit:$image_source_commit,
+    pool:$pool,runner_scale_set:$runner_scale_set,boot_started_at:$boot_started_at}' \
+  >"${state_dir}/identity.json"
+chmod 0644 "${state_dir}/identity.json"
+# Sampler runs as root; the parent remains 0700.
+credentials_finished_uptime="$(cut -d' ' -f1 /proc/uptime)"
+systemctl daemon-reload
+{% if telemetry_enabled | bool %}
+# The package unit may have exhausted its restart burst before bootstrap wrote
+# the runtime environment file. Clear that boot-time failure before the first
+# credentialed start.
+systemctl reset-failed otelcol-contrib.service || true
+systemctl enable --now otelcol-contrib.service
+systemctl enable --now also-ran-runner-telemetry-sample.timer
+{% else %}
+# Reimaged or upgraded hosts must not retain an exporter or an ingest token.
+for unit in otelcol-contrib.service also-ran-runner-telemetry-sample.timer also-ran-runner-telemetry-sample.service; do
+  if systemctl cat "${unit}" >/dev/null 2>&1; then
+    systemctl disable --now "${unit}"
+  fi
+done
+rm -f /etc/otelcol-contrib/otelcol-contrib.conf
+{% endif %}
+systemctl enable --now also-ran-runner-readiness.service
+systemctl enable --now outrunner.service
+# Emit the measured early phases after the collector is running. Starting the
+# service is not proof that GitHub's runner listener is online.
+jq -cn --arg event runner_bootstrap_metric --arg instance_id "${instance_id}" \
+  --arg boot_id "${boot_id}" --arg zone "${zone}" --arg pool "${runner_pool}" \
+  --arg image_source_commit "${image_source_commit}" --arg started_at "${bootstrap_started_at}" \
+  --arg completed_at "$(date --utc +%FT%TZ)" \
+  --argjson start "${bootstrap_started_uptime}" --argjson metadata "${metadata_finished_uptime}" \
+  --argjson storage "${storage_finished_uptime}" --argjson credentials "${credentials_finished_uptime}" \
+  --argjson end "$(cut -d' ' -f1 /proc/uptime)" \
+  '{event:$event,event_version:1,event_id:("bootstrap:"+$instance_id+":"+$boot_id),
+    host_instance_id:$instance_id,boot_id:$boot_id,zone:$zone,pool:$pool,
+    image_source_commit:$image_source_commit,started_at:$started_at,completed_at:$completed_at,
+    metadata_seconds:($metadata-$start),storage_seconds:($storage-$metadata),
+    configuration_credentials_seconds:($credentials-$storage),service_start_seconds:($end-$credentials),
+    bootstrap_seconds:($end-$start),boot_to_services_seconds:$end,runner_online_at:null,
+    readiness_status:"not_observed"}' \
+  >"${state_dir}/bootstrap-metric.json"
+cat "${state_dir}/bootstrap-metric.json" | systemd-cat --identifier=also-ran-runner-lifecycle --priority=info
+touch "${complete_marker}"
+systemctl enable --now gcp-runner-reaper.timer

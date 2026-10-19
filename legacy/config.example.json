@@ -1,0 +1,32 @@
+{
+  "mode": "observe",
+  "automatic_delete": false,
+  "github_repositories": ["example-org/example-repo"],
+  "github_token_file": "/run/credentials/also-ran.service/github-token",
+  "hetzner_token_file": "/run/credentials/also-ran.service/hetzner-token",
+  "workflow_label": "outrunner-hetzner-linux-x64",
+  "burst_runner_prefix": "also-ran-hetzner-burst-01-",
+  "additional_burst_runner_prefixes": ["also-ran-azure-spot-01-"],
+  "maximum_extra_hosts": 1,
+  "scale_up": {
+    "oldest_matching_queue_seconds": 45,
+    "consecutive_observations": 2,
+    "queued_job_count_immediate": 2
+  },
+  "scale_down": {
+    "continuous_idle_minutes": 30
+  },
+  "required_server_labels": {
+    "managed-by": "runner-autoscaler",
+    "fleet": "also-ran-ci",
+    "lifecycle": "burst",
+    "autoscale-slot": "burst-01"
+  },
+  "azure": {
+    "tenant_id": "00000000-0000-4000-8000-000000000001",
+    "subscription_id": "00000000-0000-4000-8000-000000000002",
+    "resource_group": "also-ran-ci-runners",
+    "client_id": "replace-at-deploy",
+    "client_secret_file": "/run/credentials/also-ran.service/azure-client-secret"
+  }
+}

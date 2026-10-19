@@ -1,0 +1,29 @@
+{
+  "policy_version": 1,
+  "builder": {
+    "name": "also-ran-runner-image-builder",
+    "server_type": "cpx32",
+    "base_image": "ubuntu-26.04",
+    "location": "nbg1",
+    "labels": {
+      "managed-by": "also-ran-image-builder",
+      "fleet": "also-ran-ci",
+      "lifecycle": "image-build"
+    }
+  },
+  "burst": {
+    "name": "also-ran-runner-burst-01",
+    "server_type": "cpx62",
+    "location": "nbg1",
+    "labels": {
+      "managed-by": "runner-autoscaler",
+      "fleet": "also-ran-ci",
+      "lifecycle": "burst",
+      "autoscale-slot": "burst-01",
+      "hold": "true"
+    }
+  },
+  "firewall_id": 11630827,
+  "ssh_key_ids": [112599230, 112659122, 130062796],
+  "protected_server_ids": [122397421, 126214251, 131178604, 166102109, 166126174]
+}

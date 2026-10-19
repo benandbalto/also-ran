@@ -1,0 +1,13 @@
+[Unit]
+# Admission closure must survive a VM reboot. The publisher atomically creates
+# this marker before it exposes the acknowledgement used by the controller.
+ConditionPathExists=!/var/lib/outrunner/admission-closed.json
+
+[Service]
+ReadWritePaths=/tmp /var/lib/outrunner
+ExecStartPre=/usr/bin/test ! -e /var/lib/outrunner/admission-closed.json
+ExecStopPost=-+/usr/local/sbin/gcp-publish-drain-receipt
+# The image lowers DefaultTimeoutStopSec so poweroff is not billed for agents
+# that ignore SIGTERM. Outrunner is the exception: a stop must still be able to
+# stop environments and deregister JIT runners before the receipt publishes.
+TimeoutStopSec=90s

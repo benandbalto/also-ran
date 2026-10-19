@@ -1,0 +1,15 @@
+[Unit]
+Description=Process an identity-bound GCP runner drain request
+After=gcp-runner-bootstrap.service outrunner.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=5min
+ExecStart=/usr/local/sbin/gcp-runner-reaper
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/outrunner

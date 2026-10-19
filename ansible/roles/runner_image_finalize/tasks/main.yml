@@ -1,0 +1,179 @@
+---
+- name: Remove runtime credential targets before image validation
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/outrunner/github-token.cred
+    - /etc/otelcol-contrib/otelcol-contrib.conf
+    - /var/lib/gcp-runner-bootstrap/complete
+    - /var/lib/outrunner/admission-closed.json
+    - /var/lib/outrunner/drain-receipt.json
+
+- name: Inspect forbidden credential paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /etc/outrunner/github-token.cred
+    - /etc/otelcol-contrib/otelcol-contrib.conf
+    - /etc/also-ran
+    - /var/lib/gcp-runner-bootstrap/complete
+    - /var/lib/outrunner/admission-closed.json
+    - /var/lib/outrunner/drain-receipt.json
+  register: runner_image_finalize_forbidden_credentials
+
+- name: Refuse to image a credential-bearing host
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "Credential-bearing path exists: {{ item.item }}"
+  loop: "{{ runner_image_finalize_forbidden_credentials.results }}"
+  no_log: true
+
+- name: Find private SSH keys in administrator homes
+  ansible.builtin.find:
+    paths:
+      - /root/.ssh
+      - "/home/{{ runner_admin_user }}/.ssh"
+    patterns:
+      - id_*
+    file_type: file
+    excludes:
+      - "*.pub"
+  register: runner_image_finalize_private_ssh_keys
+
+- name: Refuse to image private SSH keys
+  ansible.builtin.assert:
+    that:
+      - runner_image_finalize_private_ssh_keys.matched == 0
+    fail_msg: "Private SSH key material exists on the image builder."
+
+- name: Inspect active runner containers
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - ps
+      - --quiet
+  register: runner_image_finalize_active_containers
+  changed_when: false
+
+- name: Refuse to image active containers
+  ansible.builtin.assert:
+    that:
+      - runner_image_finalize_active_containers.stdout | length == 0
+    fail_msg: "Active containers exist on the image builder."
+
+- name: Record the reproducible image manifest
+  ansible.builtin.copy:
+    dest: /etc/also-ran-runner-image.json
+    owner: root
+    group: root
+    mode: "0644"
+    content: >-
+      {{ {
+        'policy_version': runner_image_finalize_policy_version,
+        'source_commit': runner_image_finalize_source_commit,
+        'outrunner_github_url': outrunner_github_url,
+        'outrunner_version': outrunner_version,
+        'runner_image': outrunner_runner_image,
+        'telemetry_enabled': telemetry_enabled | bool,
+        'otelcol_version': telemetry_otelcol_version if telemetry_enabled | bool else none,
+        'credential_free': true
+      } | to_nice_json }}
+
+- name: Inspect image service and timer units
+  ansible.builtin.command:
+    argv: [systemctl, show, --property=LoadState, --value, '{{ item }}']
+  loop:
+    - outrunner.service
+    - otelcol-contrib.service
+    - also-ran-runner-telemetry-sample.timer
+    - also-ran-runner-telemetry-sample.service
+    - also-ran-runner-readiness.service
+    - gcp-runner-reaper.timer
+  register: runner_image_finalize_unit_load_states
+  changed_when: false
+  failed_when: runner_image_finalize_unit_load_states.rc != 0 and runner_image_finalize_unit_load_states.stdout | trim != 'not-found'
+  check_mode: false
+
+- name: Disable image services before snapshot
+  ansible.builtin.systemd_service:
+    name: "{{ item.item }}"
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  loop: "{{ runner_image_finalize_unit_load_states.results }}"
+  when: item.stdout | trim != 'not-found'
+
+- name: Clear builder-specific telemetry generation and journal cursor
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /var/lib/gcp-runner-bootstrap/identity.json
+    - /var/lib/gcp-runner-bootstrap/bootstrap-metric.json
+    - /var/lib/gcp-runner-bootstrap/readiness-metric.json
+    - /var/lib/gcp-runner-bootstrap/readiness-metric.tmp
+    - /var/lib/otelcol-contrib/journal
+
+- name: Recreate empty collector journal cursor directory
+  ansible.builtin.file:
+    path: /var/lib/otelcol-contrib/journal
+    state: directory
+    owner: otelcol-contrib
+    group: otelcol-contrib
+    mode: "0700"
+  when: telemetry_enabled | bool
+
+- name: Remove transient package archives
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/var/tmp/outrunner_{{ outrunner_version }}_linux_amd64.deb"
+    - "/var/tmp/otelcol-contrib_{{ telemetry_otelcol_version }}_linux_amd64.deb"
+
+- name: Clean apt package caches
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/apt-get
+      - clean
+  changed_when: true
+
+- name: Clean cloud-init state and machine identity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/cloud-init
+      - clean
+      - --logs
+      - --machine-id
+      - --seed
+  changed_when: true
+
+- name: Remove host-specific SSH keys
+  ansible.builtin.find:
+    paths: /etc/ssh
+    patterns: ssh_host_*
+    file_type: file
+  register: runner_image_finalize_host_keys
+
+- name: Delete host-specific SSH keys
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ runner_image_finalize_host_keys.files }}"
+  no_log: true
+
+- name: Rotate the system journal before snapshot
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/journalctl
+      - --rotate
+  changed_when: true
+
+- name: Vacuum the system journal before snapshot
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/journalctl
+      - --vacuum-time=1s
+  changed_when: true

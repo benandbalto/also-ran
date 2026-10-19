@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Sysbox supplies a user namespace for this whole job container. This daemon
+# has no access to the host Docker socket or other jobs' containers/storage.
+daemon_log="${TMPDIR:-/tmp}/job-dockerd.log"
+sudo -n dockerd --host=unix:///var/run/docker.sock \
+  --group="$(id -gn)" --storage-driver=overlay2 \
+  --log-driver=local --log-opt max-size=10m --log-opt max-file=3 \
+  >"$daemon_log" 2>&1 &
+daemon_pid=$!
+for ((attempt = 0; attempt < 60; attempt++)); do
+  if docker info >/dev/null 2>&1; then
+    exec ./run.sh "$@"
+  fi
+  if ! kill -0 "$daemon_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 1
+done
+printf '%s\n' 'Job Docker daemon failed to become ready' >&2
+tail -n 80 "$daemon_log" >&2
+exit 1

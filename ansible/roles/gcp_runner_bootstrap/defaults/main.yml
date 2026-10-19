@@ -1,0 +1,14 @@
+---
+gcp_runner_bootstrap_project_id: ""
+gcp_runner_bootstrap_project_number: ""
+gcp_runner_bootstrap_github_secret: outrunner-github-token
+gcp_runner_bootstrap_axiom_secret: axiom-api-token
+gcp_runner_bootstrap_shared_label: outrunner-gcp-linux-x64
+gcp_runner_bootstrap_default_stop_timeout: 15s
+gcp_runner_bootstrap_agent_stop_timeout: 5s
+gcp_runner_bootstrap_inhibit_delay_max: 5s
+gcp_runner_bootstrap_fast_stop_units:
+  - google-guest-agent.service
+  - google-osconfig-agent.service
+  - google-shutdown-scripts.service
+  - snapd.service

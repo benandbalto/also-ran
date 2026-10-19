@@ -1,0 +1,7 @@
+[Login]
+# unattended-upgrades ships /usr/lib/systemd/logind.conf.d/ with this file name
+# and InhibitDelayMaxSec=30, and its shutdown helper holds its delay lock to that
+# limit on every poweroff: 30s of each 35s guest shutdown on image 4a274dcfdd8c
+# (shutdown regression). A runner host's disk is deleted after it stops, so there is
+# no upgrade worth waiting for.
+InhibitDelayMaxSec={{ gcp_runner_bootstrap_inhibit_delay_max }}

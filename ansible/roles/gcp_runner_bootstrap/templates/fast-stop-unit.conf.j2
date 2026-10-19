@@ -1,0 +1,4 @@
+[Service]
+# Measured hanging on poweroff until SIGKILL (shutdown regression);
+# google-shutdown-scripts has no stop limit at all and once held a probe 5+ min.
+TimeoutStopSec={{ gcp_runner_bootstrap_agent_stop_timeout }}

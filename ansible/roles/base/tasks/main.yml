@@ -1,0 +1,64 @@
+---
+- name: Require a supported Debian-family host
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == "Debian"
+      - ansible_architecture == "x86_64"
+    fail_msg: "The canary currently supports x86_64 Ubuntu/Debian hosts only."
+
+- name: Link the configured timezone
+  ansible.builtin.file:
+    src: "/usr/share/zoneinfo/{{ runner_timezone }}"
+    dest: /etc/localtime
+    state: link
+    force: true
+
+- name: Record the configured timezone
+  ansible.builtin.copy:
+    dest: /etc/timezone
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ runner_timezone }}\n"
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - git
+      - jq
+      - tzdata
+      - unattended-upgrades
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Enable automatic security updates
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+
+- name: Ensure the journald configuration directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Bound persistent journal usage
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/runner-size-cap.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Journal]
+      SystemMaxUse=1G
+  notify: Restart journald

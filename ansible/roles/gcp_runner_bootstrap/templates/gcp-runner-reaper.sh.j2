@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly metadata_url="http://metadata.google.internal/computeMetadata/v1"
+readonly metadata_header="Metadata-Flavor: Google"
+readonly receipt_path="/var/lib/outrunner/drain-receipt.json"
+
+metadata_value() {
+  curl --fail --silent --show-error \
+    --connect-timeout 2 --max-time 10 \
+    --header "${metadata_header}" \
+    "${metadata_url}/$1"
+}
+
+instance_id="$(metadata_value instance/id)"
+if [[ ! "${instance_id}" =~ ^[0-9]+$ ]]; then
+  echo "invalid numeric GCP instance ID" >&2
+  exit 1
+fi
+
+# A missing request is the normal steady state. GCP returns HTTP 404 for an
+# absent custom metadata attribute.
+if ! drain_request="$(metadata_value instance/attributes/runner-drain-request 2>/dev/null)"; then
+  # Bootstrap failures never start Outrunner and previously failed the reaper's
+  # unit condition. Give provisioning 15 minutes before retiring such a host.
+  if (( $(cut -d. -f1 /proc/uptime) < 900 )); then exit 0; fi
+  runner_state="$(systemctl show -p ActiveState --value outrunner.service)"
+  if ! systemctl is-failed --quiet gcp-runner-bootstrap.service; then
+    if [[ ! -e /var/lib/gcp-runner-bootstrap/complete ]] \
+      || [[ "${runner_state}" != inactive && "${runner_state}" != failed ]]; then
+      exit 0
+    fi
+  fi
+  drain_request="${instance_id}"
+fi
+if [[ "${drain_request}" != "${instance_id}" ]]; then
+  echo "ignoring drain request for a different GCP instance generation" >&2
+  exit 1
+fi
+if [[ -f "${receipt_path}" ]] \
+  && jq -e --arg id "${instance_id}" \
+    '.status == "admission_closed" and .identity.instance_id == $id' \
+    /var/lib/outrunner/admission-closed.json >/dev/null 2>&1; then
+  exit 0
+fi
+if ! systemctl is-active --quiet outrunner.service; then
+  # Never stop a live daemon to manufacture deletion proof. Close future
+  # admission durably, then independently verify there are no environments.
+  bootstrap_state="$(systemctl show -p ActiveState --value gcp-runner-bootstrap.service)"
+  bootstrap_substate="$(systemctl show -p SubState --value gcp-runner-bootstrap.service)"
+  if [[ "${bootstrap_state}" != failed ]] \
+    && [[ ! -e /var/lib/gcp-runner-bootstrap/complete || "${bootstrap_substate}" != exited ]]; then
+    echo "bootstrap is not terminal; deferring orphan recovery" >&2
+    exit 1
+  fi
+  runner_state="$(systemctl show -p ActiveState --value outrunner.service)"
+  if [[ "${runner_state}" != inactive && "${runner_state}" != failed ]]; then
+    exit 1
+  fi
+  mkdir -p /var/lib/outrunner
+  # Both units have ConditionPathExists/ExecStartPre guards for this marker.
+  # Keep the marker even if later verification fails: do not reopen admission.
+  if [[ ! -e /var/lib/outrunner/admission-closed.json ]]; then
+    printf '{}\n' >/var/lib/outrunner/admission-closed.json
+    sync --file-system /var/lib/outrunner/admission-closed.json
+  fi
+  runner_state="$(systemctl show -p ActiveState --value outrunner.service)"
+  if [[ "${runner_state}" != inactive && "${runner_state}" != failed ]] \
+    || [[ "$(systemctl show -p MainPID --value outrunner.service)" != 0 ]]; then
+    exit 1
+  fi
+  if containers="$(timeout --kill-after=5s 30s docker ps --quiet 2>/dev/null)"; then
+    [[ -z "${containers}" ]] || exit 1
+  else
+    # A broken Docker daemon cannot prove that its containers stopped. Only
+    # a daemon that NEVER launched Outrunner can use the failed-boot path.
+    [[ "$(systemctl show -p ExecMainStartTimestampMonotonic --value outrunner.service)" == 0 ]] || exit 1
+    if pgrep -f '(^|/)containerd-shim[^ ]*( |$)' >/dev/null; then exit 1; fi
+  fi
+  if pgrep -x 'Runner.Worker|Runner.Listener' >/dev/null; then exit 1; fi
+  scale_set="$(metadata_value instance/attributes/runner-scale-set)"
+  slot="$(metadata_value instance/attributes/runner-slot)"
+  source_commit="$(metadata_value instance/attributes/runner-image-source-commit)"
+  project_id="$(metadata_value project/project-id)"
+  instance_name="$(metadata_value instance/name)"
+  zone_path="$(metadata_value instance/zone)"
+  boot_id="$(cat /proc/sys/kernel/random/boot_id)"
+  [[ "${project_id}" == {{ gcp_runner_bootstrap_project_id | quote }} ]] || exit 1
+  [[ "${slot}" =~ ^gcp-(drain|prod|general)-[0-9]{2}$ ]] || exit 1
+  acknowledgement="$(jq --compact-output --null-input \
+    --arg scale_set "${scale_set}" --arg slot "${slot}" \
+    --arg source "${source_commit}" --arg project "${project_id}" \
+    --arg id "${instance_id}" --arg name "${instance_name}" \
+    --arg zone "${zone_path##*/}" --arg boot "${boot_id}" \
+    --arg closed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{version:1,status:"admission_closed",scale_set:$scale_set,closed_at:$closed_at,
+      identity:{provider:"gcp",project_id:$project,instance_id:$id,
+        instance_name:$name,zone:$zone,autoscale_slot:$slot,boot_id:$boot,
+        image_source_commit:$source}}')"
+  # Publish only once, so repeated timer ticks cannot create conflicting serial
+  # records with different timestamps. Retry the same evidence after transport
+  # failures; guest attributes retain the copy if serial output rotates away.
+  if ! jq -e '.status == "admission_closed"' /var/lib/outrunner/admission-closed.json >/dev/null 2>&1; then
+    printf '%s\n' "${acknowledgement}" >/var/lib/outrunner/admission-closed.json.tmp
+    chmod 0600 /var/lib/outrunner/admission-closed.json.tmp
+    mv /var/lib/outrunner/admission-closed.json.tmp /var/lib/outrunner/admission-closed.json
+    sync --file-system /var/lib/outrunner/admission-closed.json
+  fi
+  encoded="$(base64 --wrap=0 /var/lib/outrunner/admission-closed.json)"
+  printf 'ALSO_RAN_ADMISSION_CLOSED_V1 %s\n' "${encoded}" >>/dev/ttyS0
+  curl --fail --silent --show-error --connect-timeout 2 --max-time 10 \
+    --request PUT --header "${metadata_header}" --data "${encoded}" \
+    "${metadata_url}/instance/guest-attributes/also-ran/admission-closed"
+  exit 0
+fi
+
+# SIGUSR1 closes admission inside Outrunner's scaler mutex. It never stops an
+# active job; Outrunner publishes the identity-bound receipt only after every
+# tracked environment is stopped and its JIT runner is deregistered.
+systemctl kill --kill-who=main --signal=SIGUSR1 outrunner.service
+printf 'requested race-safe Outrunner drain for GCP instance %s\n' "${instance_id}" \
+  | systemd-cat --identifier=also-ran-reaper --priority=info

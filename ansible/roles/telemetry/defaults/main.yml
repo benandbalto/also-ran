@@ -1,0 +1,19 @@
+---
+# Opt in at image build time; disabled images do not install a collector.
+telemetry_enabled: false
+telemetry_otelcol_version: "0.152.1"
+telemetry_otelcol_deb_sha256: "36f8f3ffb32b47ec7edecfbddbde91eda13dfedbe917f6fe60193ce47044b8f6"
+
+telemetry_axiom_endpoint: "https://api.axiom.co"
+telemetry_axiom_metrics_dataset: "vm-metrics"
+telemetry_axiom_logs_dataset: "vm-logs"
+telemetry_axiom_token: "{{ lookup('ansible.builtin.env', 'AXIOM_TOKEN') }}"
+telemetry_credential_required: true
+telemetry_service_enabled: true
+
+telemetry_collection_interval: "30s"
+telemetry_environment: "canary"
+telemetry_fleet_name: "also-ran-ci"
+telemetry_host_role: "github-runner"
+telemetry_service_name: "also-ran-ci-runner"
+telemetry_runner_pool: "fixed"

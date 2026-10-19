@@ -1,0 +1,84 @@
+---
+receivers:
+  hostmetrics:
+    collection_interval: "{{ telemetry_collection_interval }}"
+    scrapers:
+      cpu:
+      memory:
+      disk:
+      filesystem:
+      network:
+      load:
+      processes:
+  journald:
+    # journalctl otherwise replaces MESSAGE over 4096 bytes with null.
+    all: true
+    storage: file_storage/journal
+    start_at: end
+    priority: info
+
+processors:
+  batch:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 256
+    spike_limit_mib: 64
+  resource/fleet:
+    attributes:
+      - key: service.name
+        value: "{{ telemetry_service_name }}"
+        action: upsert
+      - key: deployment.environment.name
+        value: "{{ telemetry_environment }}"
+        action: upsert
+      - key: host.role
+        value: "{{ telemetry_host_role }}"
+        action: upsert
+      - key: fleet.name
+        value: "{{ telemetry_fleet_name }}"
+        action: upsert
+      - key: runner.scale_set
+        value: "{{ outrunner_scale_set_name }}"
+        action: upsert
+      - key: runner.pool
+        value: "{{ telemetry_runner_pool }}"
+        action: upsert
+  resourcedetection/system:
+    detectors: [system]
+    system:
+      hostname_sources: [os]
+
+exporters:
+  otlphttp/metrics:
+    endpoint: "{{ telemetry_axiom_endpoint }}"
+    compression: zstd
+    headers:
+      authorization: "Bearer ${env:AXIOM_TOKEN}"
+      x-axiom-metrics-dataset: "{{ telemetry_axiom_metrics_dataset }}"
+  otlphttp/logs:
+    endpoint: "{{ telemetry_axiom_endpoint }}"
+    compression: zstd
+    headers:
+      authorization: "Bearer ${env:AXIOM_TOKEN}"
+      x-axiom-dataset: "{{ telemetry_axiom_logs_dataset }}"
+
+extensions:
+  file_storage/journal:
+    directory: /var/lib/otelcol-contrib/journal
+  health_check:
+    endpoint: 127.0.0.1:13133
+
+service:
+  extensions: [health_check, file_storage/journal]
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      processors: [memory_limiter, resourcedetection/system, resource/fleet, batch]
+      exporters: [otlphttp/metrics]
+    logs:
+      receivers: [journald]
+      processors: [memory_limiter, resourcedetection/system, resource/fleet, batch]
+      exporters: [otlphttp/logs]
