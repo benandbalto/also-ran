@@ -1,2 +1,2 @@
 # Needed only for local/CI Ansible syntax validation; controller tests use stdlib.
-ansible-core==2.21.5
+ansible-core==2.22.0
